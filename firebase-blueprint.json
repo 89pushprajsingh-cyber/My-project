@@ -1,0 +1,213 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user account and role preference",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["seeker", "provider"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "role", "createdAt", "updatedAt"]
+    },
+    "ProviderKyc": {
+      "title": "ProviderKyc",
+      "description": "Strictly isolated Aadhaar identity verification record for service providers",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "aadhaarNumber": { "type": "string", "minLength": 12, "maxLength": 12, "pattern": "^[0-9]{12}$" },
+        "aadhaarLast4": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "fullNameOnCard": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "aadhaarDocUrl": { "type": "string", "maxLength": 300 },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "aadhaarNumber", "aadhaarLast4", "fullNameOnCard", "verifiedAt", "updatedAt"]
+    },
+    "ServiceListing": {
+      "title": "ServiceListing",
+      "description": "Publicly discoverable service provider shop listing with location, photos, and rating summary",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "shopName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Barber & Salon",
+            "Beauty & Spa",
+            "Home Repairs",
+            "Auto & Bike",
+            "Tailoring",
+            "Wellness & Fitness",
+            "Tutoring",
+            "Other"
+          ]
+        },
+        "description": { "type": "string", "minLength": 5, "maxLength": 600 },
+        "address": { "type": "string", "minLength": 3, "maxLength": 240 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "openHours": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "servicesOffered": { "type": "array" },
+        "photoUrls": { "type": "array" },
+        "aadhaarVerified": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "ratingSum": { "type": "number" },
+        "ratingCount": { "type": "integer" },
+        "lastReviewedAppointmentId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId",
+        "ownerName",
+        "shopName",
+        "category",
+        "description",
+        "address",
+        "lat",
+        "lng",
+        "openHours",
+        "servicesOffered",
+        "photoUrls",
+        "aadhaarVerified",
+        "isActive",
+        "ratingSum",
+        "ratingCount",
+        "lastReviewedAppointmentId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ServiceReview": {
+      "title": "ServiceReview",
+      "description": "Verified post-appointment star rating and written review for a service provider",
+      "type": "object",
+      "properties": {
+        "appointmentId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "providerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "seekerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reviewerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "serviceItem": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "rating": { "type": "integer" },
+        "comment": { "type": "string", "minLength": 3, "maxLength": 600 },
+        "isPublished": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "appointmentId",
+        "providerId",
+        "seekerId",
+        "reviewerName",
+        "serviceItem",
+        "rating",
+        "comment",
+        "isPublished",
+        "createdAt"
+      ]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "Direct 1-on-1 real-time chat channel between a seeker and a service provider",
+      "type": "object",
+      "properties": {
+        "seekerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "seekerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "providerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "shopName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "lastMessage": { "type": "string", "maxLength": 300 },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["seekerId", "seekerName", "providerId", "shopName", "lastMessage", "lastMessageAt", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message or appointment card event in a chat thread",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "seekerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "providerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["text", "appointment_request", "appointment_update"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "appointmentId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "senderName", "seekerId", "providerId", "type", "text", "createdAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Scheduled service appointment between a seeker and a service provider",
+      "type": "object",
+      "properties": {
+        "seekerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "seekerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "providerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "shopName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "chatId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "serviceItem": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "scheduledDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "scheduledTime": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "notes": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "declined", "cancelled", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "seekerId",
+        "seekerName",
+        "providerId",
+        "shopName",
+        "chatId",
+        "serviceItem",
+        "scheduledDate",
+        "scheduledTime",
+        "notes",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Private user account documents readable only by the owner"
+    },
+    "/providers/{providerId}/private/{docId}": {
+      "schema": { "$ref": "ProviderKyc" },
+      "description": "Strictly private Aadhaar KYC records accessible only to the owning provider"
+    },
+    "/services/{providerId}": {
+      "schema": { "$ref": "ServiceListing" },
+      "description": "Publicly discoverable shop and service listings for signed-in users"
+    },
+    "/services/{providerId}/reviews/{reviewId}": {
+      "schema": { "$ref": "ServiceReview" },
+      "description": "Immutable post-appointment reviews keyed by completed appointmentId"
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "ChatThread" },
+      "description": "1-on-1 chat threads between a seeker and provider"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "ChatMessage" },
+      "description": "Real-time messages belonging to a chat thread"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "Appointment" },
+      "description": "Appointment bookings linked to a seeker, provider, and chat thread"
+    }
+  }
+}

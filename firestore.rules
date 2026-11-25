@@ -1,0 +1,431 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidImagePath(path) {
+      return path is string
+        && path.size() >= 1
+        && path.size() <= 300
+        && (
+          path.matches('^/uploads/[a-f0-9\\-]+\\.(jpg|png|webp)$')
+          || path.matches('^/src/assets/images/[a-zA-Z0-9_\\-]+\\.jpg$')
+        );
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.photoURL is string && data.photoURL.size() <= 500
+        && (data.photoURL == '' || data.photoURL.matches('^https://.*'))
+        && data.role in ['seeker', 'provider']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidKyc(data, providerId) {
+      return data.keys().hasAll(['ownerId', 'aadhaarNumber', 'aadhaarLast4', 'fullNameOnCard', 'aadhaarDocUrl', 'verifiedAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'aadhaarNumber', 'aadhaarLast4', 'fullNameOnCard', 'aadhaarDocUrl', 'verifiedAt', 'updatedAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.ownerId == providerId
+        && data.aadhaarNumber is string && data.aadhaarNumber.size() == 12 && data.aadhaarNumber.matches('^[0-9]{12}$')
+        && data.aadhaarLast4 is string && data.aadhaarLast4.size() == 4 && data.aadhaarLast4.matches('^[0-9]{4}$')
+        && data.fullNameOnCard is string && data.fullNameOnCard.size() >= 2 && data.fullNameOnCard.size() <= 100
+        && data.aadhaarDocUrl is string && data.aadhaarDocUrl.size() <= 300
+        && (data.aadhaarDocUrl == '' || isValidImagePath(data.aadhaarDocUrl))
+        && data.verifiedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidService(data, providerId) {
+      return data.keys().hasAll([
+          'ownerId', 'ownerName', 'shopName', 'category', 'description',
+          'address', 'lat', 'lng', 'openHours', 'servicesOffered',
+          'photoUrls', 'aadhaarVerified', 'isActive',
+          'ratingSum', 'ratingCount', 'lastReviewedAppointmentId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'ownerName', 'shopName', 'category', 'description',
+          'address', 'lat', 'lng', 'openHours', 'servicesOffered',
+          'photoUrls', 'aadhaarVerified', 'isActive',
+          'ratingSum', 'ratingCount', 'lastReviewedAppointmentId',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == providerId
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80
+        && data.shopName is string && data.shopName.size() >= 2 && data.shopName.size() <= 100
+        && data.category in [
+          'Barber & Salon', 'Beauty & Spa', 'Home Repairs',
+          'Auto & Bike', 'Tailoring', 'Wellness & Fitness', 'Tutoring', 'Other'
+        ]
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 600
+        && data.address is string && data.address.size() >= 3 && data.address.size() <= 240
+        && data.lat is number && data.lat >= -90.0 && data.lat <= 90.0
+        && data.lng is number && data.lng >= -180.0 && data.lng <= 180.0
+        && data.openHours is string && data.openHours.size() >= 2 && data.openHours.size() <= 80
+        && data.servicesOffered is list && data.servicesOffered.size() >= 1 && data.servicesOffered.size() <= 10
+        && data.servicesOffered[0] is string && data.servicesOffered[0].size() >= 1 && data.servicesOffered[0].size() <= 100
+        && data.photoUrls is list && data.photoUrls.size() >= 1 && data.photoUrls.size() <= 3
+        && isValidImagePath(data.photoUrls[0])
+        && data.aadhaarVerified is bool && data.aadhaarVerified == true
+        && data.isActive is bool
+        && data.ratingCount is int && data.ratingCount >= 0 && data.ratingCount <= 1000000
+        && data.ratingSum is int && data.ratingSum >= 0 && data.ratingSum <= data.ratingCount * 5
+        && data.lastReviewedAppointmentId is string && data.lastReviewedAppointmentId.size() <= 128
+        && (data.lastReviewedAppointmentId == '' || isValidId(data.lastReviewedAppointmentId))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidReview(data, providerId, reviewId) {
+      return data.keys().hasAll([
+          'appointmentId', 'providerId', 'seekerId', 'reviewerName',
+          'serviceItem', 'rating', 'comment', 'isPublished', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'appointmentId', 'providerId', 'seekerId', 'reviewerName',
+          'serviceItem', 'rating', 'comment', 'isPublished', 'createdAt'
+        ])
+        && isValidId(data.appointmentId)
+        && isValidId(data.providerId)
+        && isValidId(data.seekerId)
+        && data.appointmentId == reviewId
+        && data.providerId == providerId
+        && data.seekerId == request.auth.uid
+        && data.reviewerName is string && data.reviewerName.size() >= 1 && data.reviewerName.size() <= 80
+        && data.serviceItem is string && data.serviceItem.size() >= 1 && data.serviceItem.size() <= 120
+        && data.rating is int && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() >= 3 && data.comment.size() <= 600
+        && data.isPublished is bool && data.isPublished == true
+        && data.createdAt is timestamp;
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll([
+          'seekerId', 'seekerName', 'providerId', 'shopName',
+          'lastMessage', 'lastMessageAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'seekerId', 'seekerName', 'providerId', 'shopName',
+          'lastMessage', 'lastMessageAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.seekerId)
+        && isValidId(data.providerId)
+        && data.seekerName is string && data.seekerName.size() >= 1 && data.seekerName.size() <= 80
+        && data.shopName is string && data.shopName.size() >= 1 && data.shopName.size() <= 100
+        && data.lastMessage is string && data.lastMessage.size() <= 300
+        && data.lastMessageAt is timestamp
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderId', 'senderName', 'seekerId', 'providerId', 'type', 'text', 'createdAt'])
+        && data.keys().hasOnly(['senderId', 'senderName', 'seekerId', 'providerId', 'type', 'text', 'appointmentId', 'createdAt'])
+        && isValidId(data.senderId)
+        && isValidId(data.seekerId)
+        && isValidId(data.providerId)
+        && data.senderId == request.auth.uid
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && data.type in ['text', 'appointment_request', 'appointment_update']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
+        && (!('appointmentId' in data) || isValidId(data.appointmentId))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll([
+          'seekerId', 'seekerName', 'providerId', 'shopName', 'chatId',
+          'serviceItem', 'scheduledDate', 'scheduledTime', 'notes',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'seekerId', 'seekerName', 'providerId', 'shopName', 'chatId',
+          'serviceItem', 'scheduledDate', 'scheduledTime', 'notes',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.seekerId)
+        && isValidId(data.providerId)
+        && isValidId(data.chatId)
+        && data.seekerName is string && data.seekerName.size() >= 1 && data.seekerName.size() <= 80
+        && data.shopName is string && data.shopName.size() >= 1 && data.shopName.size() <= 100
+        && data.serviceItem is string && data.serviceItem.size() >= 1 && data.serviceItem.size() <= 120
+        && data.scheduledDate is string && data.scheduledDate.size() == 10 && data.scheduledDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.scheduledTime is string && data.scheduledTime.size() == 5 && data.scheduledTime.matches('^\\d{2}:\\d{2}$')
+        && data.notes is string && data.notes.size() <= 300
+        && data.status in ['pending', 'confirmed', 'declined', 'cancelled', 'completed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUser(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'role', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /providers/{providerId}/private/{docId} {
+      allow get: if isValidId(providerId) && docId == 'kyc' && isOwner(providerId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(providerId)
+        && docId == 'kyc'
+        && isOwner(providerId)
+        && isValidKyc(incoming(), providerId)
+        && incoming().verifiedAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(providerId)
+        && docId == 'kyc'
+        && isOwner(providerId)
+        && isValidKyc(incoming(), providerId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().verifiedAt == existing().verifiedAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'aadhaarNumber', 'aadhaarLast4', 'fullNameOnCard', 'aadhaarDocUrl', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /services/{providerId} {
+      allow get: if isSignedIn() && isValidId(providerId);
+      allow list: if isSignedIn() && (resource.data.isActive == true || resource.data.ownerId == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(providerId)
+        && isOwner(providerId)
+        && isValidService(incoming(), providerId)
+        && incoming().ratingSum == 0
+        && incoming().ratingCount == 0
+        && incoming().lastReviewedAppointmentId == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/providers/$(providerId)/private/kyc);
+      allow update: if isVerifiedUser()
+        && isValidId(providerId)
+        && isValidService(incoming(), providerId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Provider owner updates shop profile fields (ratings stay untouched)
+          (
+            isOwner(providerId)
+            && (
+              (
+                ('ratingSum' in existing())
+                && incoming().ratingSum == existing().ratingSum
+                && incoming().ratingCount == existing().ratingCount
+                && incoming().lastReviewedAppointmentId == existing().lastReviewedAppointmentId
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'ownerName', 'shopName', 'category', 'description', 'address',
+                  'lat', 'lng', 'openHours', 'servicesOffered', 'photoUrls',
+                  'aadhaarVerified', 'isActive', 'updatedAt'
+                ])
+              )
+              ||
+              (
+                !('ratingSum' in existing())
+                && incoming().ratingSum == 0
+                && incoming().ratingCount == 0
+                && incoming().lastReviewedAppointmentId == ''
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                  'ownerName', 'shopName', 'category', 'description', 'address',
+                  'lat', 'lng', 'openHours', 'servicesOffered', 'photoUrls',
+                  'aadhaarVerified', 'isActive', 'ratingSum', 'ratingCount',
+                  'lastReviewedAppointmentId', 'updatedAt'
+                ])
+              )
+            )
+            && (
+              exists(/databases/$(database)/documents/providers/$(providerId)/private/kyc)
+              || existsAfter(/databases/$(database)/documents/providers/$(providerId)/private/kyc)
+            )
+          )
+          ||
+          // Tier 2: Verified customer atomically increments rating aggregates alongside a new review
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'ratingSum', 'ratingCount', 'lastReviewedAppointmentId', 'updatedAt'
+            ])
+            && isValidId(incoming().lastReviewedAppointmentId)
+            && incoming().ratingCount == existing().ratingCount + 1
+            && incoming().ratingSum >= existing().ratingSum + 1
+            && incoming().ratingSum <= existing().ratingSum + 5
+            && !exists(/databases/$(database)/documents/services/$(providerId)/reviews/$(incoming().lastReviewedAppointmentId))
+            && existsAfter(/databases/$(database)/documents/services/$(providerId)/reviews/$(incoming().lastReviewedAppointmentId))
+            && getAfter(/databases/$(database)/documents/services/$(providerId)/reviews/$(incoming().lastReviewedAppointmentId)).data.rating == (incoming().ratingSum - existing().ratingSum)
+            && getAfter(/databases/$(database)/documents/services/$(providerId)/reviews/$(incoming().lastReviewedAppointmentId)).data.seekerId == request.auth.uid
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(providerId) && isOwner(providerId);
+
+      match /reviews/{reviewId} {
+        allow get: if isSignedIn() && isValidId(providerId) && isValidId(reviewId);
+        allow list: if isSignedIn() && (
+          resource.data.isPublished == true
+          || resource.data.seekerId == request.auth.uid
+          || resource.data.providerId == request.auth.uid
+        );
+        allow create: if isVerifiedUser()
+          && isValidId(providerId)
+          && isValidId(reviewId)
+          && isValidReview(incoming(), providerId, reviewId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/services/$(providerId))
+          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.seekerId == request.auth.uid
+          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.providerId == providerId
+          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.status == 'completed'
+          && getAfter(/databases/$(database)/documents/services/$(providerId)).data.lastReviewedAppointmentId == reviewId
+          && getAfter(/databases/$(database)/documents/services/$(providerId)).data.ratingCount == get(/databases/$(database)/documents/services/$(providerId)).data.ratingCount + 1;
+        allow update, delete: if false;
+      }
+    }
+
+    match /chats/{chatId} {
+      allow get: if isSignedIn()
+        && isValidId(chatId)
+        && (existing().seekerId == request.auth.uid || existing().providerId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (resource.data.seekerId == request.auth.uid || resource.data.providerId == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(chatId)
+        && isValidChat(incoming())
+        && incoming().seekerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().lastMessageAt == request.time
+        && exists(/databases/$(database)/documents/services/$(incoming().providerId));
+      allow update: if isVerifiedUser()
+        && isValidId(chatId)
+        && isValidChat(incoming())
+        && (existing().seekerId == request.auth.uid || existing().providerId == request.auth.uid)
+        && incoming().seekerId == existing().seekerId
+        && incoming().providerId == existing().providerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().lastMessageAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageAt', 'updatedAt']);
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn()
+          && isValidId(chatId)
+          && isValidId(messageId)
+          && (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.seekerId == request.auth.uid
+            || get(/databases/$(database)/documents/chats/$(chatId)).data.providerId == request.auth.uid
+          );
+        allow list: if isSignedIn()
+          && (resource.data.seekerId == request.auth.uid || resource.data.providerId == request.auth.uid);
+        allow create: if isVerifiedUser()
+          && isValidId(chatId)
+          && isValidId(messageId)
+          && isValidMessage(incoming())
+          && incoming().senderId == request.auth.uid
+          && incoming().createdAt == request.time
+          && (
+            getAfter(/databases/$(database)/documents/chats/$(chatId)).data.seekerId == request.auth.uid
+            || getAfter(/databases/$(database)/documents/chats/$(chatId)).data.providerId == request.auth.uid
+          )
+          && incoming().seekerId == getAfter(/databases/$(database)/documents/chats/$(chatId)).data.seekerId
+          && incoming().providerId == getAfter(/databases/$(database)/documents/chats/$(chatId)).data.providerId;
+        allow update, delete: if false;
+      }
+    }
+
+    match /appointments/{appointmentId} {
+      allow get: if isSignedIn()
+        && isValidId(appointmentId)
+        && (existing().seekerId == request.auth.uid || existing().providerId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (resource.data.seekerId == request.auth.uid || resource.data.providerId == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(appointmentId)
+        && isValidAppointment(incoming())
+        && incoming().seekerId == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/services/$(incoming().providerId))
+        && existsAfter(/databases/$(database)/documents/chats/$(incoming().chatId));
+      allow update: if isVerifiedUser()
+        && isValidId(appointmentId)
+        && isValidAppointment(incoming())
+        && !(existing().status in ['declined', 'cancelled', 'completed'])
+        && incoming().seekerId == existing().seekerId
+        && incoming().providerId == existing().providerId
+        && incoming().chatId == existing().chatId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            request.auth.uid == existing().providerId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'scheduledDate', 'scheduledTime', 'notes', 'updatedAt'])
+            && incoming().status in ['pending', 'confirmed', 'declined', 'completed']
+          )
+          || (
+            request.auth.uid == existing().seekerId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && incoming().status == 'cancelled'
+          )
+        );
+      allow delete: if false;
+    }
+  }
+}

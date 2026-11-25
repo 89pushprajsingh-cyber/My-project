@@ -1,0 +1,106 @@
+/**
+ * Security Rule Verification Suite — Dirty Dozen Adversarial Payloads
+ * Validates every invariant in security_spec.md against firestore.rules.
+ */
+
+export const DIRTY_DOZEN_CASES = [
+  {
+    name: '1. Spoofed UID on User Profile Create',
+    path: 'users/alice',
+    authUid: 'alice',
+    payload: { uid: 'bob', displayName: 'Attacker', email: 'a@b.com', photoURL: '', role: 'seeker' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '2. Oversized Display Name (Resource Poisoning)',
+    path: 'users/alice',
+    authUid: 'alice',
+    payload: { uid: 'alice', displayName: 'A'.repeat(500), email: 'a@b.com', photoURL: '', role: 'seeker' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '3. Service Listing Created Without Atomic Aadhaar KYC',
+    path: 'services/alice',
+    authUid: 'alice',
+    payload: { ownerId: 'alice', shopName: 'Unverified Shop', aadhaarVerified: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '4. Malformed Aadhaar Number (< 12 digits)',
+    path: 'providers/alice/private/kyc',
+    authUid: 'alice',
+    payload: { ownerId: 'alice', aadhaarNumber: '12345', aadhaarLast4: '2345', fullNameOnCard: 'Alice' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '5. Shadow Ghost Field Injection on Service',
+    path: 'services/alice',
+    authUid: 'alice',
+    payload: { ownerId: 'alice', shopName: 'Craft Salon', featuredRank: 1 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '6. Cross-Provider Private Aadhaar KYC Read',
+    path: 'providers/bob/private/kyc',
+    authUid: 'alice',
+    operation: 'get',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '7. Unsafe javascript: URI in Service Photos',
+    path: 'services/alice',
+    authUid: 'alice',
+    payload: { ownerId: 'alice', photoUrls: ['javascript:alert(1)'] },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '8. Unscoped List Query on Chats',
+    path: 'chats',
+    authUid: 'alice',
+    operation: 'list',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '9. Spoofed Sender ID in Chat Message',
+    path: 'chats/alice_bob/messages/m1',
+    authUid: 'alice',
+    payload: { senderId: 'bob', seekerId: 'alice', providerId: 'bob', type: 'text', text: 'Hi' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '10. Non-Participant Chat Message Injection',
+    path: 'chats/alice_bob/messages/m2',
+    authUid: 'mallory',
+    payload: { senderId: 'mallory', seekerId: 'alice', providerId: 'bob', type: 'text', text: 'Hi' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '11. Appointment Status Bypass on Create',
+    path: 'appointments/appt1',
+    authUid: 'alice',
+    payload: { seekerId: 'alice', providerId: 'bob', status: 'confirmed' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '12. Terminal Appointment Tampering After Cancellation',
+    path: 'appointments/appt1',
+    authUid: 'bob',
+    existingStatus: 'cancelled',
+    payload: { status: 'confirmed' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '13. Review Without Completed Appointment',
+    path: 'services/bob/reviews/apptPending',
+    authUid: 'alice',
+    payload: { appointmentId: 'apptPending', providerId: 'bob', seekerId: 'alice', rating: 5, comment: 'Great!' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '14. Out-of-Range Star Rating Injection (rating: 9)',
+    path: 'services/bob/reviews/apptDone',
+    authUid: 'alice',
+    payload: { appointmentId: 'apptDone', providerId: 'bob', seekerId: 'alice', rating: 9, comment: 'Inflated' },
+    expected: 'PERMISSION_DENIED',
+  },
+] as const;

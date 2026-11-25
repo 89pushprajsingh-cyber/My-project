@@ -1,0 +1,6 @@
+{
+  "name": "NearCraft",
+  "description": "Discover Aadhaar-verified local service providers on an interactive map, filter by optional radius, and schedule appointments via real-time chat.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
