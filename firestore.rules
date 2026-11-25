@@ -92,10 +92,7 @@ service cloud.firestore {
         && data.ownerId == providerId
         && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80
         && data.shopName is string && data.shopName.size() >= 2 && data.shopName.size() <= 100
-        && data.category in [
-          'Cafe & Dining', 'Barber & Salon', 'Beauty & Spa', 'Home Repairs',
-          'Auto & Bike', 'Tailoring', 'Wellness & Fitness', 'Tutoring', 'Other'
-        ]
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 80
         && data.description is string && data.description.size() >= 5 && data.description.size() <= 600
         && data.address is string && data.address.size() >= 3 && data.address.size() <= 240
         && data.lat is number && data.lat >= -90.0 && data.lat <= 90.0

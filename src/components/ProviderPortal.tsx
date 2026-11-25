@@ -35,6 +35,7 @@ import {
   VALIDATION_LIMITS,
 } from '../types';
 import { PlacesSearchInput } from './PlacesSearchInput';
+import { ServiceTypeaheadInput } from './ServiceTypeaheadInput';
 import { MapCameraSync } from './MapRadiusCircle';
 import { SafeImage } from './SafeImage';
 import { StarRatingDisplay } from './StarRating';
@@ -60,7 +61,7 @@ export function ProviderPortal({
     existingService?.ownerName || user.displayName || ''
   );
   const [category, setCategory] = useState<ServiceCategory>(
-    existingService?.category || 'Barber & Salon'
+    existingService?.category || 'Hair Salon'
   );
   const [description, setDescription] = useState(existingService?.description || '');
   const [openHours, setOpenHours] = useState(
@@ -209,7 +210,21 @@ export function ProviderPortal({
   };
 
   const handleLoadCategorySampleMenu = () => {
-    if (category === 'Cafe & Dining') {
+    const catLower = category.toLowerCase();
+    if (
+      catLower.includes('cafe') ||
+      catLower.includes('coffee') ||
+      catLower.includes('restaurant') ||
+      catLower.includes('food') ||
+      catLower.includes('bakery') ||
+      catLower.includes('tea') ||
+      catLower.includes('juice') ||
+      catLower.includes('dhaba') ||
+      catLower.includes('pizza') ||
+      catLower.includes('burger') ||
+      catLower.includes('sweet') ||
+      catLower.includes('ice cream')
+    ) {
       setCatalogItems([
         { name: 'Hot Tomato Herb Soup', itemType: 'Soup', unit: '1 plate', price: 140 },
         { name: 'Sweet Corn Veg Soup', itemType: 'Soup', unit: '1 plate', price: 150 },
@@ -219,7 +234,13 @@ export function ProviderPortal({
       ]);
       setNewItemType('Soup');
       setNewItemUnit('1 plate');
-    } else if (category === 'Barber & Salon') {
+    } else if (
+      catLower.includes('salon') ||
+      catLower.includes('barber') ||
+      catLower.includes('beauty') ||
+      catLower.includes('grooming') ||
+      catLower.includes('spa')
+    ) {
       setCatalogItems([
         { name: 'Classic Haircut', itemType: 'Haircut', unit: '30 mins', price: 250 },
         { name: 'Skin Fade & Wash', itemType: 'Haircut', unit: '45 mins', price: 350 },
@@ -622,20 +643,17 @@ export function ProviderPortal({
                 htmlFor="service-category"
                 className="block text-sm font-medium text-slate-700 mb-1.5"
               >
-                Service Category
+                Service Category (Type first letter to search)
               </label>
-              <select
+              <ServiceTypeaheadInput
                 id="service-category"
                 value={category}
-                onChange={(e) => setCategory(e.target.value as ServiceCategory)}
-                className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-              >
-                {SERVICE_CATEGORIES.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
+                onChange={setCategory}
+                allowAll={false}
+                placeholder="Type first letter (e.g., G, H, R, B)..."
+                variant="light"
+                ariaLabel="Service Category"
+              />
             </div>
 
             <div>

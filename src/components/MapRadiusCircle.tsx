@@ -20,11 +20,11 @@ export function MapRadiusCircle({ center, radiusKm }: MapRadiusCircleProps) {
       map,
       center,
       radius: radiusKm * 1000,
-      strokeColor: '#1d4ed8',
-      strokeOpacity: 0.75,
-      strokeWeight: 1.5,
-      fillColor: '#3b82f6',
-      fillOpacity: 0.1,
+      strokeColor: '#b48936',
+      strokeOpacity: 0.85,
+      strokeWeight: 2,
+      fillColor: '#c8a45d',
+      fillOpacity: 0.14,
       clickable: false,
     });
 

@@ -30,12 +30,17 @@ import {
   getServiceCatalogItems,
   haversineDistanceKm,
   LatLngPoint,
-  SERVICE_CATEGORIES,
   ServiceCategory,
   ServiceListing,
 } from '../types';
+import {
+  matchesSelectedServiceCategory,
+  searchServiceDirectory,
+} from '../data/serviceDirectory';
 import { PlacesSearchInput } from './PlacesSearchInput';
+import { ServiceTypeaheadInput } from './ServiceTypeaheadInput';
 import { MapCameraSync, MapRadiusCircle } from './MapRadiusCircle';
+import { CircularRadiusDial } from './CircularRadiusDial';
 import { SafeImage } from './SafeImage';
 import { StarRatingDisplay } from './StarRating';
 import { ProviderReviewsList } from './ProviderReviewsList';
@@ -82,13 +87,9 @@ type DiscoveryEntry =
       ratingCount: number;
     };
 
-const RADIUS_OPTIONS: { label: string; value: number | null }[] = [
-  { label: 'Any distance', value: null },
-  { label: '2 km', value: 2 },
-  { label: '5 km', value: 5 },
-  { label: '10 km', value: 10 },
-  { label: '25 km', value: 25 },
-];
+const MIN_RADIUS_KM = 1;
+const MAX_RADIUS_KM = 20;
+const DEFAULT_SLIDER_RADIUS_KM = 5;
 
 const DEFAULT_MAP_CENTER: LatLngPoint = { lat: 28.6139, lng: 77.209 };
 
@@ -270,7 +271,25 @@ export function DiscoveryWorkspace({
   const [googleRefreshSeq, setGoogleRefreshSeq] = useState(0);
   const [lastQueriedCenter, setLastQueriedCenter] = useState<LatLngPoint | null>(null);
   const [pannedCenter, setPannedCenter] = useState<LatLngPoint | null>(null);
+  const [isSearchHintsOpen, setIsSearchHintsOpen] = useState(false);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
   const fetchingDetailIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
+        setIsSearchHintsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const searchDirectoryHints = useMemo(() => {
+    const q = searchText.trim();
+    if (!q) return [];
+    return searchServiceDirectory(q, 8);
+  }, [searchText]);
 
   const effectiveCenter = useMemo<LatLngPoint>(() => {
     if (searchCenter) return searchCenter;
@@ -304,8 +323,12 @@ export function DiscoveryWorkspace({
         ? []
         : activeRegistered
             .filter((svc) => {
-              if (selectedCategory !== 'All' && svc.category !== selectedCategory) {
-                return false;
+              if (selectedCategory !== 'All') {
+                const catalog = getServiceCatalogItems(svc);
+                const haystack = `${svc.shopName} ${svc.category} ${svc.description} ${svc.servicesOffered.join(' ')} ${catalog.map((c) => c.name).join(' ')}`.toLowerCase();
+                if (!matchesSelectedServiceCategory(svc.category, haystack, selectedCategory)) {
+                  return false;
+                }
               }
               return matchesSearchQuery(svc, searchText);
             })
@@ -328,8 +351,9 @@ export function DiscoveryWorkspace({
               };
             })
             .filter((entry) => {
-              if (radiusKm !== null && entry.distanceKm !== null) {
-                return entry.distanceKm <= radiusKm;
+              if (radiusKm !== null) {
+                const dist = entry.distanceKm ?? entry.sortDistanceKm;
+                return dist <= radiusKm;
               }
               return true;
             });
@@ -374,8 +398,9 @@ export function DiscoveryWorkspace({
               };
             })
             .filter((entry) => {
-              if (radiusKm !== null && searchCenter && entry.distanceKm !== null) {
-                return entry.distanceKm <= radiusKm;
+              if (radiusKm !== null) {
+                const dist = entry.distanceKm ?? entry.sortDistanceKm;
+                return dist <= radiusKm;
               }
               return true;
             });
@@ -664,26 +689,26 @@ export function DiscoveryWorkspace({
         />
       )}
 
-      {/* Left Sidebar: Filters & Matching Providers + Live Google Maps Places */}
-      <aside className="w-full lg:w-[440px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col lg:h-full">
-        <div className="p-5 border-b border-slate-200 space-y-3.5">
+      {/* Left Sidebar: Luxury Concierge Controls + Matching Providers & Google Maps Places */}
+      <aside className="w-full lg:w-[440px] shrink-0 bg-[#fcfaf5] border-b lg:border-b-0 lg:border-r border-[#e4dac4] flex flex-col lg:h-full lg:overflow-y-auto">
+        <div className="p-5 bg-[#141210] text-[#f7f4ed] border-b border-[#2f2920] space-y-3.5 shrink-0">
           <div className="flex items-center justify-between gap-2">
-            <h1 className="text-lg font-bold text-slate-900 tracking-tight">
+            <h1 className="font-serif text-xl font-semibold text-[#f7f4ed] tracking-wide">
               Find Local Services
             </h1>
             <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs font-mono tabular-nums text-slate-500">
+              <span className="text-xs font-mono tabular-nums text-[#d8b66f]">
                 {discoveredEntries.length} found
               </span>
-              <span className="text-slate-300" aria-hidden="true">·</span>
+              <span className="text-[#544b3d]" aria-hidden="true">·</span>
               <select
                 aria-label="Sort results"
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as 'nearest' | 'rating')}
-                className="text-xs font-medium text-slate-700 bg-transparent border-0 pr-1 py-0.5 focus:outline-none cursor-pointer"
+                className="text-xs font-medium text-[#efe8d8] bg-[#1d1915] border border-[#362f24] rounded-md px-2 py-1 focus:outline-none focus:border-[#c8a45d] cursor-pointer"
               >
-                <option value="nearest">Nearest</option>
-                <option value="rating">Top Rated</option>
+                <option value="nearest" className="bg-[#141210] text-[#f7f4ed]">Nearest</option>
+                <option value="rating" className="bg-[#141210] text-[#f7f4ed]">Top Rated</option>
               </select>
             </div>
           </div>
@@ -691,50 +716,77 @@ export function DiscoveryWorkspace({
           {/* Service Type Selector & Keyword Search */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
-              <label htmlFor="discover-category" className="block text-xs font-medium text-slate-600 mb-1">
+              <label htmlFor="discover-category" className="block text-xs font-medium text-[#c9c0b0] mb-1">
                 Service Type
               </label>
-              <select
+              <ServiceTypeaheadInput
                 id="discover-category"
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value as 'All' | ServiceCategory)}
-                className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
-              >
-                <option value="All">All Services</option>
-                {SERVICE_CATEGORIES.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
+                onChange={(val) => setSelectedCategory(val)}
+                allowAll
+                allLabel="All Services"
+                placeholder="Type first letter (e.g., B, G, H)..."
+                variant="luxury-dark"
+                ariaLabel="Service Type"
+              />
             </div>
 
-            <div>
-              <label htmlFor="discover-search" className="block text-xs font-medium text-slate-600 mb-1">
+            <div ref={searchBoxRef} className="relative">
+              <label htmlFor="discover-search" className="block text-xs font-medium text-[#c9c0b0] mb-1">
                 Search Shop, Dish, or Service
               </label>
               <input
                 id="discover-search"
                 type="text"
                 value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="e.g., soup, cafe, salon, goggles"
-                className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                onFocus={() => {
+                  if (searchText.trim().length >= 1) setIsSearchHintsOpen(true);
+                }}
+                onChange={(e) => {
+                  setSearchText(e.target.value);
+                  setIsSearchHintsOpen(e.target.value.trim().length >= 1);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setIsSearchHintsOpen(false);
+                }}
+                placeholder="Type letter or dish (e.g., S, soup, cafe)"
+                className="w-full px-3 py-2 text-sm bg-[#1d1915] border border-[#362f24] rounded-lg text-[#f7f4ed] placeholder:text-[#8f8677] focus:outline-none focus:ring-2 focus:ring-[#c8a45d]/25 focus:border-[#c8a45d]"
               />
+              {isSearchHintsOpen && searchDirectoryHints.length > 0 && (
+                <ul className="absolute z-50 mt-1.5 right-0 w-full min-w-[240px] rounded-lg shadow-2xl max-h-60 overflow-y-auto bg-[#1a1713] border border-[#3d3426] divide-y divide-[#2b251d]">
+                  {searchDirectoryHints.map((hint) => (
+                    <li key={hint.key}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchText(hint.name);
+                          setIsSearchHintsOpen(false);
+                        }}
+                        className="w-full px-3 py-2 text-left flex items-center justify-between gap-2 text-[#e5decb] hover:bg-[#2a241b] hover:text-white transition-colors"
+                      >
+                        <span className="text-xs font-medium truncate">{hint.name}</span>
+                        <span className="text-[10px] text-[#9b9180] shrink-0 truncate max-w-[115px]">
+                          {hint.isGroup ? 'Category' : hint.group}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
 
           {/* Location Search + GPS */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-medium text-slate-600">
+              <label className="text-xs font-medium text-[#c9c0b0]">
                 Your Live Location / Area
               </label>
               <button
                 type="button"
                 onClick={handleUseMyGps}
                 disabled={isLocating}
-                className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-800 whitespace-nowrap"
+                className="inline-flex items-center gap-1 text-xs font-medium text-[#d8b66f] hover:text-[#f0d596] whitespace-nowrap"
               >
                 <Crosshair className="w-3.5 h-3.5" />
                 <span>{isLocating ? 'Locating...' : 'Share Live GPS'}</span>
@@ -743,6 +795,7 @@ export function DiscoveryWorkspace({
 
             {mapsReady ? (
               <PlacesSearchInput
+                variant="luxury-dark"
                 initialValue={searchAddressLabel}
                 placeholder="Search neighborhood or city"
                 onLocationSelected={({ address, location }) => {
@@ -756,51 +809,24 @@ export function DiscoveryWorkspace({
                 type="text"
                 disabled
                 placeholder="Initializing Places search..."
-                className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-400"
+                className="w-full px-3 py-2 text-sm bg-[#1d1915] border border-[#362f24] rounded-lg text-[#8f8677]"
               />
             )}
-            {gpsError && <p className="mt-1 text-xs text-red-600">{gpsError}</p>}
+            {gpsError && <p className="mt-1 text-xs text-red-300">{gpsError}</p>}
           </div>
 
-          {/* Optional Radius Filter + Source Filter */}
+          {/* Circular Radius Dial (1 km – 20 km) + Source Filter */}
           <div className="space-y-2.5">
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-slate-600">
-                  Search Radius (optional)
-                </span>
-                {searchCenter && radiusKm !== null && (
-                  <button
-                    type="button"
-                    onClick={() => setRadiusKm(null)}
-                    className="text-xs text-blue-700 hover:underline"
-                  >
-                    Clear radius
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-5 gap-1 p-1 bg-slate-100 rounded-lg">
-                {RADIUS_OPTIONS.map((opt) => {
-                  const active = radiusKm === opt.value;
-                  return (
-                    <button
-                      key={opt.label}
-                      type="button"
-                      onClick={() => handleSelectRadius(opt.value)}
-                      className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate ${
-                        active
-                          ? 'bg-white text-slate-900 shadow-sm'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {opt.label === 'Any distance' ? 'Any' : opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <CircularRadiusDial
+              value={radiusKm}
+              min={MIN_RADIUS_KM}
+              max={MAX_RADIUS_KM}
+              defaultValue={DEFAULT_SLIDER_RADIUS_KM}
+              onChange={(km) => handleSelectRadius(km)}
+              onClear={() => setRadiusKm(null)}
+            />
 
-            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
+            <div className="grid grid-cols-3 gap-1 p-1 bg-[#1d1915] border border-[#362f24] rounded-lg">
               {(
                 [
                   { id: 'all', label: 'All Services' },
@@ -816,8 +842,8 @@ export function DiscoveryWorkspace({
                     onClick={() => setSourceFilter(tab.id)}
                     className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate ${
                       active
-                        ? 'bg-white text-slate-900 shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-[#c8a45d] text-[#14110e] font-semibold shadow-sm'
+                        : 'text-[#cfc7b8] hover:text-white'
                     }`}
                   >
                     {tab.label}
@@ -828,17 +854,17 @@ export function DiscoveryWorkspace({
           </div>
 
           {googlePlacesError && (
-            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <p className="text-xs text-amber-200 bg-amber-950/60 border border-amber-700/60 rounded-lg px-3 py-2">
               {googlePlacesError}
             </p>
           )}
         </div>
 
         {/* Provider & Google Maps Results List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+        <div className="flex-1 min-h-[240px] lg:overflow-y-auto divide-y divide-[#ebe3d3]">
           {isLoadingGooglePlaces && discoveredEntries.length > 0 && (
-            <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 flex items-center gap-2 text-xs text-slate-500">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+            <div className="px-4 py-2 bg-[#f5efe2] border-b border-[#e4dac4] flex items-center gap-2 text-xs text-[#63594a]">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#9e7728] shrink-0" />
               <span>Updating nearby Google Maps services...</span>
             </div>
           )}
@@ -847,32 +873,32 @@ export function DiscoveryWorkspace({
             <div className="p-5 space-y-4">
               {[1, 2, 3].map((i) => (
                 <div key={i} className="animate-pulse flex gap-3.5">
-                  <div className="w-20 h-20 rounded-lg bg-slate-200 shrink-0" />
+                  <div className="w-20 h-20 rounded-lg bg-[#e8e0cf] shrink-0" />
                   <div className="flex-1 space-y-2 py-1">
-                    <div className="h-4 bg-slate-200 rounded w-2/3" />
-                    <div className="h-3 bg-slate-100 rounded w-1/2" />
-                    <div className="h-3 bg-slate-100 rounded w-3/4" />
+                    <div className="h-4 bg-[#e8e0cf] rounded w-2/3" />
+                    <div className="h-3 bg-[#f1eadc] rounded w-1/2" />
+                    <div className="h-3 bg-[#f1eadc] rounded w-3/4" />
                   </div>
                 </div>
               ))}
             </div>
           ) : discoveredEntries.length === 0 ? (
             <div className="p-8 text-center">
-              <MapPin className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-              <h3 className="text-sm font-semibold text-slate-900">
+              <MapPin className="w-8 h-8 text-[#c8a45d]/70 mx-auto mb-3" />
+              <h3 className="text-sm font-semibold text-[#181512]">
                 No matching services found
               </h3>
-              <p className="mt-1.5 text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">
+              <p className="mt-1.5 text-xs text-[#686053] leading-relaxed max-w-xs mx-auto">
                 {sourceFilter === 'registered' && services.length === 0
                   ? 'No registered NearCraft partner shops are listed yet. Switch to All Services to browse live businesses on Google Maps.'
-                  : 'Try widening your radius, searching a different service keyword, or viewing All Services.'}
+                  : 'Try widening your circular radius dial, searching a different service keyword, or viewing All Services.'}
               </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 {sourceFilter !== 'all' && (
                   <button
                     type="button"
                     onClick={() => setSourceFilter('all')}
-                    className="px-3.5 py-2 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg whitespace-nowrap"
+                    className="px-3.5 py-2 text-xs font-semibold text-[#14110e] bg-[#e9dcc0] hover:bg-[#dfcda5] rounded-lg whitespace-nowrap"
                   >
                     Show All Services
                   </button>
@@ -881,7 +907,7 @@ export function DiscoveryWorkspace({
                   <button
                     type="button"
                     onClick={() => setRadiusKm(null)}
-                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
+                    className="px-3.5 py-2 text-xs font-medium text-[#2f2920] bg-[#efe9da] hover:bg-[#e5dcc7] rounded-lg whitespace-nowrap"
                   >
                     Show Any Distance
                   </button>
@@ -890,7 +916,7 @@ export function DiscoveryWorkspace({
                   <button
                     type="button"
                     onClick={() => setSelectedCategory('All')}
-                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
+                    className="px-3.5 py-2 text-xs font-medium text-[#2f2920] bg-[#efe9da] hover:bg-[#e5dcc7] rounded-lg whitespace-nowrap"
                   >
                     All Categories
                   </button>
@@ -899,7 +925,7 @@ export function DiscoveryWorkspace({
                   <button
                     type="button"
                     onClick={() => setSearchText('')}
-                    className="px-3.5 py-2 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg whitespace-nowrap"
+                    className="px-3.5 py-2 text-xs font-semibold text-[#14110e] bg-[#e9dcc0] hover:bg-[#dfcda5] rounded-lg whitespace-nowrap"
                   >
                     Clear Search
                   </button>
@@ -934,11 +960,11 @@ export function DiscoveryWorkspace({
                       }
                     }}
                     className={`p-4 cursor-pointer transition-colors ${
-                      isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                      isSelected ? 'bg-[#f2e8d2]' : 'hover:bg-[#f6f1e6]'
                     }`}
                   >
                     <div className="flex gap-3.5">
-                      <div className="w-24 h-20 rounded-lg overflow-hidden border border-slate-200 shrink-0 bg-slate-100">
+                      <div className="w-24 h-20 rounded-lg overflow-hidden border border-[#e3d9c3] shrink-0 bg-[#efe8d8]">
                         <SafeImage
                           src={service.photoUrls[0]}
                           alt={service.shopName}
@@ -948,17 +974,17 @@ export function DiscoveryWorkspace({
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
-                          <h3 className="text-sm font-semibold text-slate-900 truncate">
+                          <h3 className="text-sm font-semibold text-[#181512] truncate">
                             {service.shopName}
                           </h3>
                           {distanceKm !== null && (
-                            <span className="text-xs font-mono tabular-nums font-semibold text-blue-700 shrink-0">
+                            <span className="text-xs font-mono tabular-nums font-semibold text-[#7d5c1c] shrink-0">
                               {formatDistanceKm(distanceKm)}
                             </span>
                           )}
                         </div>
 
-                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-[#686053]">
                           <StarRatingDisplay
                             average={avgRating}
                             count={service.ratingCount ?? 0}
@@ -967,18 +993,18 @@ export function DiscoveryWorkspace({
                           <span aria-hidden="true">·</span>
                           <span>{service.category}</span>
                           <span aria-hidden="true">·</span>
-                          <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                          <span className="inline-flex items-center gap-1 text-[#1f6246] font-medium">
                             <ShieldCheck className="w-3.5 h-3.5" />
                             <span>Verified Partner</span>
                           </span>
                         </div>
 
-                        <p className="mt-1 text-xs text-slate-600 truncate">
+                        <p className="mt-1 text-xs text-[#574f43] truncate">
                           {service.address}
                         </p>
 
                         <div className="mt-2 flex items-center justify-between gap-2">
-                          <span className="text-[11px] text-slate-500 truncate tabular-nums">
+                          <span className="text-[11px] text-[#686053] truncate tabular-nums">
                             {catalog.length} {catalog.length === 1 ? 'item' : 'items'}
                             {minPrice !== null ? ` · From ₹${minPrice}` : ''}
                           </span>
@@ -989,7 +1015,7 @@ export function DiscoveryWorkspace({
                                 e.stopPropagation();
                                 onOpenChat(service);
                               }}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors whitespace-nowrap"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#14110e] bg-[#e9dcc0] hover:bg-[#dfcda5] rounded-md transition-colors whitespace-nowrap"
                             >
                               <MessageSquare className="w-3.5 h-3.5" />
                               <span>Chat</span>
@@ -1022,11 +1048,11 @@ export function DiscoveryWorkspace({
                     }
                   }}
                   className={`p-4 cursor-pointer transition-colors ${
-                    isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                    isSelected ? 'bg-[#f2e8d2]' : 'hover:bg-[#f6f1e6]'
                   }`}
                 >
                   <div className="flex gap-3.5">
-                    <div className="w-24 h-20 rounded-lg overflow-hidden border border-slate-200 shrink-0 bg-slate-100">
+                    <div className="w-24 h-20 rounded-lg overflow-hidden border border-[#e3d9c3] shrink-0 bg-[#efe8d8]">
                       <SafeImage
                         src={place.photos[0]?.url || ''}
                         alt={place.displayName}
@@ -1036,17 +1062,17 @@ export function DiscoveryWorkspace({
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-slate-900 truncate">
+                        <h3 className="text-sm font-semibold text-[#181512] truncate">
                           {place.displayName}
                         </h3>
                         {distanceKm !== null && (
-                          <span className="text-xs font-mono tabular-nums font-semibold text-blue-700 shrink-0">
+                          <span className="text-xs font-mono tabular-nums font-semibold text-[#7d5c1c] shrink-0">
                             {formatDistanceKm(distanceKm)}
                           </span>
                         )}
                       </div>
 
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-[#686053]">
                         <StarRatingDisplay
                           average={place.rating}
                           count={place.userRatingCount}
@@ -1055,15 +1081,15 @@ export function DiscoveryWorkspace({
                         <span aria-hidden="true">·</span>
                         <span>{place.primaryTypeLabel}</span>
                         <span aria-hidden="true">·</span>
-                        <span className="text-slate-600 font-medium">Google Maps</span>
+                        <span className="text-[#524a3e] font-medium">Google Maps</span>
                       </div>
 
-                      <p className="mt-1 text-xs text-slate-600 truncate">
+                      <p className="mt-1 text-xs text-[#574f43] truncate">
                         {place.shortAddress}
                       </p>
 
                       <div className="mt-2 flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-slate-500 truncate">
+                        <span className="text-[11px] text-[#686053] truncate">
                           {priceText || formatBusinessStatusLabel(place.businessStatus) || 'Google Place'}
                         </span>
                         <a
@@ -1071,7 +1097,7 @@ export function DiscoveryWorkspace({
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap shrink-0"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#2f2920] bg-[#efe9da] hover:bg-[#e5dcc7] rounded-md transition-colors whitespace-nowrap shrink-0"
                         >
                           <span>Directions</span>
                           <ExternalLink className="w-3 h-3" />
@@ -1087,15 +1113,15 @@ export function DiscoveryWorkspace({
       </aside>
 
       {/* Right Pane: Full-Size Interactive Google Map + Selected Shop Sheet */}
-      <main className="relative flex-1 h-[540px] lg:h-full bg-slate-100">
+      <main className="relative flex-1 h-[540px] lg:h-full bg-[#efe9da]">
         {mapsReady && pannedCenter && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
             <button
               type="button"
               onClick={handleSearchPannedArea}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-md transition-colors whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#f7f4ed] bg-[#141210] hover:bg-[#221e19] border border-[#3a3123] rounded-lg shadow-lg transition-colors whitespace-nowrap"
             >
-              <RefreshCw className="w-3.5 h-3.5 text-blue-700" />
+              <RefreshCw className="w-3.5 h-3.5 text-[#d8b66f]" />
               <span>Search This Map Area</span>
             </button>
           </div>
@@ -1124,7 +1150,7 @@ export function DiscoveryWorkspace({
 
             {searchCenter && (
               <AdvancedMarker position={searchCenter} title="Your Search Location">
-                <div className="w-4 h-4 rounded-full bg-blue-600 border-2 border-white shadow-md" />
+                <div className="w-4 h-4 rounded-full bg-[#c8a45d] border-2 border-[#14110e] ring-2 ring-white shadow-md" />
               </AdvancedMarker>
             )}
 
@@ -1148,9 +1174,9 @@ export function DiscoveryWorkspace({
                     }
                   >
                     <Pin
-                      background={isSelected ? '#1d4ed8' : '#0f172a'}
+                      background={isSelected ? '#c8a45d' : '#171411'}
                       borderColor="#ffffff"
-                      glyphColor="#ffffff"
+                      glyphColor={isSelected ? '#14110e' : '#d8b66f'}
                       scale={isSelected ? 1.2 : 1}
                     />
                   </AdvancedMarker>
@@ -1168,9 +1194,9 @@ export function DiscoveryWorkspace({
                   onClick={() => handleSelectEntry({ source: 'google', id: place.id })}
                 >
                   <Pin
-                    background={isSelected ? '#1d4ed8' : '#047857'}
+                    background={isSelected ? '#c8a45d' : '#1e4d3b'}
                     borderColor="#ffffff"
-                    glyphColor="#ffffff"
+                    glyphColor={isSelected ? '#14110e' : '#f5ecd8'}
                     scale={isSelected ? 1.2 : 0.95}
                   />
                 </AdvancedMarker>
@@ -1180,11 +1206,11 @@ export function DiscoveryWorkspace({
         ) : (
           <div className="w-full h-full flex items-center justify-center p-8 text-center">
             <div className="max-w-sm">
-              <MapPin className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-sm font-medium text-slate-700">
+              <MapPin className="w-8 h-8 text-[#9e7728] mx-auto mb-2" />
+              <p className="text-sm font-medium text-[#181512]">
                 Loading Google Maps...
               </p>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-[#686053]">
                 Verify your Google Maps API key configuration if the map does not appear.
               </p>
             </div>
@@ -1193,16 +1219,16 @@ export function DiscoveryWorkspace({
 
         {/* Selected Provider OR Google Maps Place Sheet */}
         {selectedEntry && selectedCoords && (
-          <div className="absolute bottom-3 left-3 right-3 lg:top-4 lg:bottom-4 lg:left-auto lg:right-4 lg:w-[460px] max-h-[82vh] lg:max-h-none bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden z-20 flex flex-col">
+          <div className="absolute bottom-3 left-3 right-3 lg:top-4 lg:bottom-4 lg:left-auto lg:right-4 lg:w-[460px] max-h-[82vh] lg:max-h-none bg-[#fcfaf5] border border-[#dfd4bd] rounded-xl shadow-2xl overflow-hidden z-20 flex flex-col">
             {/* Photo Gallery Header */}
-            <div className="relative h-40 sm:h-44 bg-slate-100 shrink-0 group">
+            <div className="relative h-40 sm:h-44 bg-[#efe8d8] shrink-0 group">
               <button
                 type="button"
                 onClick={() => {
                   if (selectedGalleryPhotos.length > 0) setIsLightboxOpen(true);
                 }}
                 aria-label={`Preview ${selectedShopName} photos fullscreen`}
-                className="block w-full h-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                className="block w-full h-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#c8a45d]"
               >
                 <SafeImage
                   src={selectedGalleryPhotos[safePhotoIdx]?.url || ''}
@@ -1210,14 +1236,14 @@ export function DiscoveryWorkspace({
                   fallbackLabel={selectedShopCategory}
                   className="w-full h-full object-cover"
                 />
-                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/65 via-black/15 to-transparent" />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/15 to-transparent" />
               </button>
 
               <button
                 type="button"
                 onClick={() => handleSelectEntry(null)}
                 aria-label="Close shop details"
-                className="absolute top-2.5 right-2.5 p-1.5 bg-white/95 hover:bg-white text-slate-700 rounded-lg border border-slate-200 shadow-sm z-10"
+                className="absolute top-2.5 right-2.5 p-1.5 bg-[#141210]/90 hover:bg-[#141210] text-[#f7f4ed] rounded-lg border border-[#3d3426] shadow-sm z-10"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1296,7 +1322,7 @@ export function DiscoveryWorkspace({
 
             {/* Required Photo Author Attribution for Google Place Photos */}
             {selectedGooglePlace && selectedGalleryPhotos[safePhotoIdx]?.attributionText && (
-              <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-500 flex items-center justify-between gap-2 shrink-0">
+              <div className="px-4 py-1.5 bg-[#f5efe2] border-b border-[#e4dac4] text-[11px] text-[#686053] flex items-center justify-between gap-2 shrink-0">
                 <span className="truncate">
                   Photo credit:{' '}
                   {selectedGalleryPhotos[safePhotoIdx].attributionUri ? (
@@ -1304,39 +1330,39 @@ export function DiscoveryWorkspace({
                       href={selectedGalleryPhotos[safePhotoIdx].attributionUri!}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-slate-700 hover:underline font-medium"
+                      className="text-[#181512] hover:underline font-medium"
                     >
                       {selectedGalleryPhotos[safePhotoIdx].attributionText}
                     </a>
                   ) : (
-                    <span className="text-slate-700 font-medium">
+                    <span className="text-[#181512] font-medium">
                       {selectedGalleryPhotos[safePhotoIdx].attributionText}
                     </span>
                   )}
                 </span>
-                <span className="text-slate-400 shrink-0">Google Maps</span>
+                <span className="text-[#887e6e] shrink-0">Google Maps</span>
               </div>
             )}
 
             {/* Shop Summary & Tabs */}
-            <div className="px-4 pt-3.5 pb-0 border-b border-slate-200 shrink-0">
+            <div className="px-4 pt-3.5 pb-0 border-b border-[#e4dac4] shrink-0">
               <div className="flex items-start justify-between gap-2">
-                <h2 className="text-base font-bold text-slate-900">
+                <h2 className="font-serif text-lg font-semibold text-[#181512]">
                   {selectedShopName}
                 </h2>
                 {selectedRegisteredService ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 shrink-0 mt-0.5">
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[#1f6246] shrink-0 mt-0.5">
                     <ShieldCheck className="w-3.5 h-3.5" />
                     <span>Aadhaar Verified</span>
                   </span>
                 ) : (
-                  <span className="text-xs font-medium text-slate-600 shrink-0 mt-0.5">
+                  <span className="text-xs font-medium text-[#686053] shrink-0 mt-0.5">
                     Google Maps Place
                   </span>
                 )}
               </div>
 
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[#686053]">
                 <StarRatingDisplay
                   average={selectedEntry.ratingValue}
                   count={selectedEntry.ratingCount}
@@ -1346,7 +1372,7 @@ export function DiscoveryWorkspace({
                 {selectedDistanceKm !== null && (
                   <>
                     <span aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums font-medium text-blue-700">
+                    <span className="font-mono tabular-nums font-medium text-[#7d5c1c]">
                       {formatDistanceKm(selectedDistanceKm)} away
                     </span>
                   </>
@@ -1359,8 +1385,8 @@ export function DiscoveryWorkspace({
                   onClick={() => setDetailTab('catalog')}
                   className={`pb-2 border-b-2 transition-colors whitespace-nowrap tabular-nums ${
                     detailTab === 'catalog'
-                      ? 'border-blue-700 text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                      ? 'border-[#b08635] text-[#181512] font-semibold'
+                      : 'border-transparent text-[#686053] hover:text-[#181512]'
                   }`}
                 >
                   {selectedRegisteredService
@@ -1372,8 +1398,8 @@ export function DiscoveryWorkspace({
                   onClick={() => setDetailTab('photos')}
                   className={`pb-2 border-b-2 transition-colors whitespace-nowrap tabular-nums ${
                     detailTab === 'photos'
-                      ? 'border-blue-700 text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                      ? 'border-[#b08635] text-[#181512] font-semibold'
+                      : 'border-transparent text-[#686053] hover:text-[#181512]'
                   }`}
                 >
                   Photos ({selectedGalleryPhotos.length})
@@ -1383,8 +1409,8 @@ export function DiscoveryWorkspace({
                   onClick={() => setDetailTab('reviews')}
                   className={`pb-2 border-b-2 transition-colors whitespace-nowrap tabular-nums ${
                     detailTab === 'reviews'
-                      ? 'border-blue-700 text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                      ? 'border-[#b08635] text-[#181512] font-semibold'
+                      : 'border-transparent text-[#686053] hover:text-[#181512]'
                   }`}
                 >
                   Reviews ({selectedEntry.ratingCount})
@@ -1399,37 +1425,37 @@ export function DiscoveryWorkspace({
                 detailTab === 'catalog' ? (
                   <>
                     <div className="space-y-2.5 text-xs">
-                      <p className="text-slate-700 leading-relaxed">
+                      <p className="text-[#363026] leading-relaxed">
                         {selectedRegisteredService.description}
                       </p>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-slate-600">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[#574f43]">
                         <p className="flex items-center gap-1.5">
-                          <Store className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <Store className="w-3.5 h-3.5 text-[#8a7d68] shrink-0" />
                           <span>Owner: {selectedRegisteredService.ownerName}</span>
                         </p>
                         <p className="flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <Clock className="w-3.5 h-3.5 text-[#8a7d68] shrink-0" />
                           <span>{selectedRegisteredService.openHours}</span>
                         </p>
                       </div>
 
-                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                      <div className="p-3 bg-[#f5efe2] rounded-lg border border-[#e4dac4] space-y-2">
                         <div className="flex items-start justify-between gap-2">
-                          <p className="text-xs text-slate-700 flex items-start gap-1.5">
-                            <MapPin className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                          <p className="text-xs text-[#2f2920] flex items-start gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-[#7d5c1c] shrink-0 mt-0.5" />
                             <span>{selectedRegisteredService.address}</span>
                           </p>
                           <button
                             type="button"
                             onClick={() => setCameraTrigger((prev) => prev + 1)}
-                            className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap shrink-0"
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap shrink-0"
                           >
                             <LocateFixed className="w-3 h-3" />
                             <span>Center Pin</span>
                           </button>
                         </div>
-                        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-[#686053]">
                           <span className="font-mono tabular-nums">
                             GPS: {selectedRegisteredService.lat.toFixed(5)},{' '}
                             {selectedRegisteredService.lng.toFixed(5)}
@@ -1438,7 +1464,7 @@ export function DiscoveryWorkspace({
                             href={`https://www.google.com/maps/dir/?api=1&destination=${selectedRegisteredService.lat},${selectedRegisteredService.lng}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline whitespace-nowrap"
+                            className="inline-flex items-center gap-1 font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap"
                           >
                             <span>Navigate on Google Maps</span>
                             <ExternalLink className="w-3 h-3" />
@@ -1449,15 +1475,15 @@ export function DiscoveryWorkspace({
 
                     <div>
                       <div className="flex items-center justify-between gap-2 mb-2">
-                        <p className="text-xs font-semibold text-slate-900">
+                        <p className="text-xs font-semibold text-[#181512]">
                           All Products & Services ({selectedCatalog.length})
                         </p>
-                        <span className="text-[11px] text-slate-500">
+                        <span className="text-[11px] text-[#686053]">
                           Select items to pay via app or counter
                         </span>
                       </div>
 
-                      <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                      <ul className="border border-[#e4dac4] bg-white rounded-lg divide-y divide-[#efe8d8]">
                         {selectedCatalog.map((item, idx) => {
                           const qty = selectedQuantities[idx] || 0;
                           return (
@@ -1466,14 +1492,14 @@ export function DiscoveryWorkspace({
                               className="px-3 py-2.5 flex items-center justify-between gap-3"
                             >
                               <div className="min-w-0 flex items-start gap-2">
-                                <span className="text-xs font-mono tabular-nums text-slate-400 pt-0.5 shrink-0">
+                                <span className="text-xs font-mono tabular-nums text-[#8a7d68] pt-0.5 shrink-0">
                                   #{idx + 1}
                                 </span>
                                 <div className="min-w-0">
-                                  <p className="text-xs font-semibold text-slate-900">
+                                  <p className="text-xs font-semibold text-[#181512]">
                                     {item.name}
                                   </p>
-                                  <p className="text-[11px] text-slate-500">
+                                  <p className="text-[11px] text-[#686053]">
                                     {item.itemType}
                                     {item.unit ? ` · ${item.unit}` : ''}
                                   </p>
@@ -1481,7 +1507,7 @@ export function DiscoveryWorkspace({
                               </div>
 
                               <div className="flex items-center gap-2.5 shrink-0">
-                                <span className="text-xs font-mono tabular-nums font-semibold text-slate-900">
+                                <span className="text-xs font-mono tabular-nums font-semibold text-[#181512]">
                                   ₹{item.price}
                                 </span>
 
@@ -1491,24 +1517,24 @@ export function DiscoveryWorkspace({
                                     onClick={() =>
                                       handleAdjustItemQty(selectedRegisteredService.id, idx, 1)
                                     }
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#f3ddb0] bg-[#181512] hover:bg-[#2a241d] rounded-md transition-colors"
                                   >
                                     <Plus className="w-3 h-3" />
                                     <span>Add</span>
                                   </button>
                                 ) : (
-                                  <div className="inline-flex items-center border border-slate-200 rounded-md bg-slate-50">
+                                  <div className="inline-flex items-center border border-[#d8cbb0] rounded-md bg-[#f5efe2]">
                                     <button
                                       type="button"
                                       aria-label={`Decrease quantity of ${item.name}`}
                                       onClick={() =>
                                         handleAdjustItemQty(selectedRegisteredService.id, idx, -1)
                                       }
-                                      className="p-1 text-slate-600 hover:text-slate-900"
+                                      className="p-1 text-[#4a4236] hover:text-[#181512]"
                                     >
                                       <Minus className="w-3 h-3" />
                                     </button>
-                                    <span className="px-2 text-xs font-mono tabular-nums font-semibold text-slate-900">
+                                    <span className="px-2 text-xs font-mono tabular-nums font-semibold text-[#181512]">
                                       {qty}
                                     </span>
                                     <button
@@ -1517,7 +1543,7 @@ export function DiscoveryWorkspace({
                                       onClick={() =>
                                         handleAdjustItemQty(selectedRegisteredService.id, idx, 1)
                                       }
-                                      className="p-1 text-slate-600 hover:text-slate-900"
+                                      className="p-1 text-[#4a4236] hover:text-[#181512]"
                                     >
                                       <Plus className="w-3 h-3" />
                                     </button>
@@ -1533,13 +1559,13 @@ export function DiscoveryWorkspace({
                     {selectedGalleryPhotos.length > 0 && (
                       <div className="pt-1">
                         <div className="flex items-center justify-between gap-2 mb-2">
-                          <p className="text-xs font-semibold text-slate-900">
+                          <p className="text-xs font-semibold text-[#181512]">
                             Shop & Product Photos ({selectedGalleryPhotos.length})
                           </p>
                           <button
                             type="button"
                             onClick={() => setDetailTab('photos')}
-                            className="text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap"
+                            className="text-[11px] font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap"
                           >
                             Open Gallery
                           </button>
@@ -1556,8 +1582,8 @@ export function DiscoveryWorkspace({
                               aria-label={`Preview shop photo ${idx + 1}`}
                               className={`group relative aspect-[4/3] rounded-lg overflow-hidden border transition-all ${
                                 safePhotoIdx === idx
-                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
-                                  : 'border-slate-200 hover:border-slate-300'
+                                  ? 'border-[#b08635] ring-2 ring-[#c8a45d]/30'
+                                  : 'border-[#e3d9c3] hover:border-[#b9a98b]'
                               }`}
                             >
                               <SafeImage
@@ -1577,20 +1603,20 @@ export function DiscoveryWorkspace({
                 ) : detailTab === 'photos' ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-slate-600">
+                      <p className="text-xs text-[#574f43]">
                         Uploaded by {selectedRegisteredService.ownerName} for{' '}
                         {selectedRegisteredService.shopName}
                       </p>
-                      <span className="text-xs font-mono tabular-nums text-slate-500">
+                      <span className="text-xs font-mono tabular-nums text-[#686053]">
                         {selectedGalleryPhotos.length}{' '}
                         {selectedGalleryPhotos.length === 1 ? 'photo' : 'photos'}
                       </span>
                     </div>
 
                     {selectedGalleryPhotos.length === 0 ? (
-                      <div className="py-10 text-center border border-slate-200 rounded-lg bg-slate-50">
-                        <Images className="w-7 h-7 text-slate-300 mx-auto mb-2" />
-                        <p className="text-xs font-medium text-slate-700">
+                      <div className="py-10 text-center border border-[#e4dac4] rounded-lg bg-[#f5efe2]">
+                        <Images className="w-7 h-7 text-[#b8a98e] mx-auto mb-2" />
+                        <p className="text-xs font-medium text-[#3a3329]">
                           No photos uploaded yet
                         </p>
                       </div>
@@ -1605,10 +1631,10 @@ export function DiscoveryWorkspace({
                               setIsLightboxOpen(true);
                             }}
                             aria-label={`Open photo ${idx + 1} in fullscreen`}
-                            className={`group relative aspect-[4/3] rounded-lg overflow-hidden border bg-slate-100 text-left transition-all ${
+                            className={`group relative aspect-[4/3] rounded-lg overflow-hidden border bg-[#efe8d8] text-left transition-all ${
                               safePhotoIdx === idx
-                                ? 'border-blue-700 ring-2 ring-blue-600/20'
-                                : 'border-slate-200 hover:border-slate-300'
+                                ? 'border-[#b08635] ring-2 ring-[#c8a45d]/30'
+                                : 'border-[#e3d9c3] hover:border-[#b9a98b]'
                             }`}
                           >
                             <SafeImage
@@ -1636,14 +1662,14 @@ export function DiscoveryWorkspace({
                 detailTab === 'catalog' ? (
                   <div className="space-y-4 text-xs">
                     {selectedGooglePlace.editorialSummary && (
-                      <p className="text-slate-700 leading-relaxed">
+                      <p className="text-[#363026] leading-relaxed">
                         {selectedGooglePlace.editorialSummary}
                       </p>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-600">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[#574f43]">
                       {formatBusinessStatusLabel(selectedGooglePlace.businessStatus) && (
-                        <span className="font-medium text-slate-800">
+                        <span className="font-medium text-[#181512]">
                           {formatBusinessStatusLabel(selectedGooglePlace.businessStatus)}
                         </span>
                       )}
@@ -1658,22 +1684,22 @@ export function DiscoveryWorkspace({
                     </div>
 
                     {/* Exact Shop Location & Reach Links */}
-                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                    <div className="p-3 bg-[#f5efe2] rounded-lg border border-[#e4dac4] space-y-2">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="text-xs text-slate-700 flex items-start gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                        <p className="text-xs text-[#2f2920] flex items-start gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-[#7d5c1c] shrink-0 mt-0.5" />
                           <span>{selectedGooglePlace.formattedAddress}</span>
                         </p>
                         <button
                           type="button"
                           onClick={() => setCameraTrigger((prev) => prev + 1)}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap shrink-0"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap shrink-0"
                         >
                           <LocateFixed className="w-3 h-3" />
                           <span>Center Pin</span>
                         </button>
                       </div>
-                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-[#686053]">
                         <span className="font-mono tabular-nums">
                           GPS: {selectedGooglePlace.lat.toFixed(5)},{' '}
                           {selectedGooglePlace.lng.toFixed(5)}
@@ -1682,7 +1708,7 @@ export function DiscoveryWorkspace({
                           href={`https://www.google.com/maps/dir/?api=1&destination=${selectedGooglePlace.lat},${selectedGooglePlace.lng}&destination_place_id=${encodeURIComponent(selectedGooglePlace.id)}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline whitespace-nowrap"
+                          className="inline-flex items-center gap-1 font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap"
                         >
                           <span>Navigate on Google Maps</span>
                           <ExternalLink className="w-3 h-3" />
@@ -1692,8 +1718,8 @@ export function DiscoveryWorkspace({
 
                     {/* Contact Links & Opening Hours */}
                     {isLoadingPlaceDetail && !selectedGooglePlace.detailsLoaded ? (
-                      <div className="p-3 border border-slate-200 rounded-lg text-slate-500 flex items-center gap-2">
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                      <div className="p-3 border border-[#e4dac4] bg-white rounded-lg text-[#686053] flex items-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#9e7728] shrink-0" />
                         <span>Loading hours, contact details, and customer reviews...</span>
                       </div>
                     ) : (
@@ -1705,9 +1731,9 @@ export function DiscoveryWorkspace({
                             {selectedGooglePlace.nationalPhoneNumber && (
                               <a
                                 href={`tel:${selectedGooglePlace.internationalPhoneNumber || selectedGooglePlace.nationalPhoneNumber}`}
-                                className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                                className="flex items-center gap-2 p-2.5 rounded-lg border border-[#e4dac4] bg-white hover:bg-[#f5efe2] text-[#2f2920] transition-colors"
                               >
-                                <Phone className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                                <Phone className="w-3.5 h-3.5 text-[#7d5c1c] shrink-0" />
                                 <span className="truncate font-mono tabular-nums">
                                   {selectedGooglePlace.nationalPhoneNumber}
                                 </span>
@@ -1718,9 +1744,9 @@ export function DiscoveryWorkspace({
                                 href={selectedGooglePlace.websiteURI}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                                className="flex items-center gap-2 p-2.5 rounded-lg border border-[#e4dac4] bg-white hover:bg-[#f5efe2] text-[#2f2920] transition-colors"
                               >
-                                <Globe className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                                <Globe className="w-3.5 h-3.5 text-[#7d5c1c] shrink-0" />
                                 <span className="truncate">Official Website</span>
                               </a>
                             )}
@@ -1729,14 +1755,14 @@ export function DiscoveryWorkspace({
 
                         {selectedGooglePlace.weekdayDescriptions.length > 0 && (
                           <div>
-                            <p className="text-xs font-semibold text-slate-900 mb-2">
+                            <p className="text-xs font-semibold text-[#181512] mb-2">
                               Opening Hours
                             </p>
-                            <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                            <ul className="border border-[#e4dac4] bg-white rounded-lg divide-y divide-[#efe8d8]">
                               {selectedGooglePlace.weekdayDescriptions.map((line) => (
                                 <li
                                   key={line}
-                                  className="px-3 py-2 text-xs text-slate-700 tabular-nums"
+                                  className="px-3 py-2 text-xs text-[#363026] tabular-nums"
                                 >
                                   {line}
                                 </li>
@@ -1751,13 +1777,13 @@ export function DiscoveryWorkspace({
                     {selectedGalleryPhotos.length > 0 && (
                       <div className="pt-1">
                         <div className="flex items-center justify-between gap-2 mb-2">
-                          <p className="text-xs font-semibold text-slate-900">
+                          <p className="text-xs font-semibold text-[#181512]">
                             Place Photos ({selectedGalleryPhotos.length})
                           </p>
                           <button
                             type="button"
                             onClick={() => setDetailTab('photos')}
-                            className="text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap"
+                            className="text-[11px] font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap"
                           >
                             Open Gallery
                           </button>
@@ -1774,8 +1800,8 @@ export function DiscoveryWorkspace({
                               aria-label={`Preview Google place photo ${idx + 1}`}
                               className={`relative aspect-[4/3] rounded-lg overflow-hidden border transition-all ${
                                 safePhotoIdx === idx
-                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
-                                  : 'border-slate-200 hover:border-slate-300'
+                                  ? 'border-[#b08635] ring-2 ring-[#c8a45d]/30'
+                                  : 'border-[#e3d9c3] hover:border-[#b9a98b]'
                               }`}
                             >
                               <SafeImage
@@ -1793,7 +1819,7 @@ export function DiscoveryWorkspace({
                     )}
 
                     {selectedGooglePlace.attributions.length > 0 && (
-                      <div className="text-[11px] text-slate-500 pt-1">
+                      <div className="text-[11px] text-[#686053] pt-1">
                         <span>Data attribution: </span>
                         {selectedGooglePlace.attributions.map((attr, idx) => (
                           <React.Fragment key={`${attr.provider}-${idx}`}>
@@ -1803,7 +1829,7 @@ export function DiscoveryWorkspace({
                                 href={attr.providerURI}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="underline hover:text-slate-700"
+                                className="underline hover:text-[#181512]"
                               >
                                 {attr.provider}
                               </a>
@@ -1815,7 +1841,7 @@ export function DiscoveryWorkspace({
                       </div>
                     )}
 
-                    <div className="p-3 rounded-lg border border-slate-200 bg-slate-50 text-[11px] text-slate-600 leading-relaxed">
+                    <div className="p-3 rounded-lg border border-[#e4dac4] bg-[#f5efe2] text-[11px] text-[#574f43] leading-relaxed">
                       Public business listing sourced live from Google Maps. Shops that register on
                       NearCraft unlock itemized service menus, direct scheduling chat, and digital
                       counter/in-app billing.
@@ -1824,19 +1850,19 @@ export function DiscoveryWorkspace({
                 ) : detailTab === 'photos' ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-slate-600">
+                      <p className="text-xs text-[#574f43]">
                         Google Maps photos for {selectedGooglePlace.displayName}
                       </p>
-                      <span className="text-xs font-mono tabular-nums text-slate-500">
+                      <span className="text-xs font-mono tabular-nums text-[#686053]">
                         {selectedGalleryPhotos.length}{' '}
                         {selectedGalleryPhotos.length === 1 ? 'photo' : 'photos'}
                       </span>
                     </div>
 
                     {selectedGalleryPhotos.length === 0 ? (
-                      <div className="py-10 text-center border border-slate-200 rounded-lg bg-slate-50">
-                        <Images className="w-7 h-7 text-slate-300 mx-auto mb-2" />
-                        <p className="text-xs font-medium text-slate-700">
+                      <div className="py-10 text-center border border-[#e4dac4] rounded-lg bg-[#f5efe2]">
+                        <Images className="w-7 h-7 text-[#b8a98e] mx-auto mb-2" />
+                        <p className="text-xs font-medium text-[#3a3329]">
                           No Google Maps photos available for this place
                         </p>
                       </div>
@@ -1851,10 +1877,10 @@ export function DiscoveryWorkspace({
                                 setIsLightboxOpen(true);
                               }}
                               aria-label={`Open photo ${idx + 1} in fullscreen`}
-                              className={`group relative w-full aspect-[4/3] rounded-lg overflow-hidden border bg-slate-100 text-left transition-all ${
+                              className={`group relative w-full aspect-[4/3] rounded-lg overflow-hidden border bg-[#efe8d8] text-left transition-all ${
                                 safePhotoIdx === idx
-                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
-                                  : 'border-slate-200 hover:border-slate-300'
+                                  ? 'border-[#b08635] ring-2 ring-[#c8a45d]/30'
+                                  : 'border-[#e3d9c3] hover:border-[#b9a98b]'
                               }`}
                             >
                               <SafeImage
@@ -1871,14 +1897,14 @@ export function DiscoveryWorkspace({
                               </div>
                             </button>
                             {photo.attributionText && (
-                              <p className="text-[10px] text-slate-500 truncate px-0.5">
+                              <p className="text-[10px] text-[#686053] truncate px-0.5">
                                 By{' '}
                                 {photo.attributionUri ? (
                                   <a
                                     href={photo.attributionUri}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="hover:underline text-slate-700"
+                                    className="hover:underline text-[#181512]"
                                   >
                                     {photo.attributionText}
                                   </a>
@@ -1895,7 +1921,7 @@ export function DiscoveryWorkspace({
                 ) : (
                   /* Google Maps Customer Reviews Tab */
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#e4dac4]">
                       <StarRatingDisplay
                         average={selectedGooglePlace.rating}
                         count={selectedGooglePlace.userRatingCount}
@@ -1905,7 +1931,7 @@ export function DiscoveryWorkspace({
                           href={selectedGooglePlace.googleMapsURI}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline whitespace-nowrap"
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-[#7d5c1c] hover:underline whitespace-nowrap"
                         >
                           <span>View on Google Maps</span>
                           <ExternalLink className="w-3 h-3" />
@@ -1914,16 +1940,16 @@ export function DiscoveryWorkspace({
                     </div>
 
                     {isLoadingPlaceDetail && !selectedGooglePlace.detailsLoaded ? (
-                      <div className="py-6 flex items-center justify-center gap-2 text-xs text-slate-500">
-                        <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
+                      <div className="py-6 flex items-center justify-center gap-2 text-xs text-[#686053]">
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#9e7728]" />
                         <span>Loading customer reviews...</span>
                       </div>
                     ) : selectedGooglePlace.reviews.length === 0 ? (
-                      <p className="py-6 text-center text-xs text-slate-500">
+                      <p className="py-6 text-center text-xs text-[#686053]">
                         No detailed Google Maps review snippets returned for this listing.
                       </p>
                     ) : (
-                      <ul className="divide-y divide-slate-100">
+                      <ul className="divide-y divide-[#efe8d8]">
                         {selectedGooglePlace.reviews.map((rev, idx) => (
                           <li key={`${rev.authorName}-${idx}`} className="py-3 space-y-1.5">
                             <div className="flex items-center justify-between gap-2">
@@ -1933,26 +1959,26 @@ export function DiscoveryWorkspace({
                                     href={rev.authorUri}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="text-xs font-semibold text-slate-900 hover:text-blue-700 hover:underline truncate"
+                                    className="text-xs font-semibold text-[#181512] hover:text-[#7d5c1c] hover:underline truncate"
                                   >
                                     {rev.authorName}
                                   </a>
                                 ) : (
-                                  <span className="text-xs font-semibold text-slate-900 truncate">
+                                  <span className="text-xs font-semibold text-[#181512] truncate">
                                     {rev.authorName}
                                   </span>
                                 )}
                               </div>
                               {rev.relativeTime && (
-                                <span className="text-[11px] text-slate-400 shrink-0 tabular-nums">
+                                <span className="text-[11px] text-[#8a7d68] shrink-0 tabular-nums">
                                   {rev.relativeTime}
                                 </span>
                               )}
                             </div>
 
                             {rev.rating !== null && (
-                              <div className="flex items-center gap-1 text-xs text-slate-700">
-                                <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                              <div className="flex items-center gap-1 text-xs text-[#2f2920]">
+                                <Star className="w-3.5 h-3.5 text-[#b8892c] fill-[#c8a45d]" />
                                 <span className="font-semibold tabular-nums">
                                   {rev.rating.toFixed(1)}
                                 </span>
@@ -1960,7 +1986,7 @@ export function DiscoveryWorkspace({
                             )}
 
                             {rev.text && (
-                              <p className="text-xs text-slate-700 leading-relaxed">
+                              <p className="text-xs text-[#363026] leading-relaxed">
                                 {rev.text}
                               </p>
                             )}
@@ -1975,16 +2001,16 @@ export function DiscoveryWorkspace({
 
             {/* Sticky Bottom Actions */}
             {selectedRegisteredService ? (
-              <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 shrink-0 space-y-2">
+              <div className="px-4 py-3 border-t border-[#e4dac4] bg-[#f5efe2] shrink-0 space-y-2">
                 {selectedBillItems.length > 0 && (
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-xs">
-                      <span className="font-semibold text-slate-900 font-mono tabular-nums">
+                      <span className="font-semibold text-[#181512] font-mono tabular-nums">
                         {selectedOrderTotals.count}{' '}
                         {selectedOrderTotals.count === 1 ? 'item' : 'items'}
                       </span>
-                      <span className="text-slate-400 mx-1.5">·</span>
-                      <span className="font-bold text-slate-900 font-mono tabular-nums">
+                      <span className="text-[#8a7d68] mx-1.5">·</span>
+                      <span className="font-bold text-[#181512] font-mono tabular-nums">
                         ₹{selectedOrderTotals.amount.toFixed(0)}
                       </span>
                     </div>
@@ -1993,7 +2019,7 @@ export function DiscoveryWorkspace({
                       onClick={() =>
                         onStartCheckout(selectedRegisteredService, selectedBillItems)
                       }
-                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#c8a45d] hover:bg-[#d8b66f] text-[#14110e] text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
                     >
                       <Receipt className="w-3.5 h-3.5" />
                       <span>Order & View Bill</span>
@@ -2007,8 +2033,8 @@ export function DiscoveryWorkspace({
                     onClick={() => onOpenChat(selectedRegisteredService)}
                     className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
                       selectedBillItems.length > 0
-                        ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
-                        : 'bg-blue-700 hover:bg-blue-800 text-white'
+                        ? 'bg-white border border-[#dfd4bd] text-[#2f2920] hover:bg-[#efe8d8]'
+                        : 'bg-[#181512] hover:bg-[#2a241d] text-[#f7f4ed]'
                     }`}
                   >
                     <Calendar className="w-3.5 h-3.5" />
@@ -2018,7 +2044,7 @@ export function DiscoveryWorkspace({
                     href={`https://www.google.com/maps/dir/?api=1&destination=${selectedRegisteredService.lat},${selectedRegisteredService.lng}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#2f2920] bg-white border border-[#dfd4bd] hover:bg-[#efe8d8] rounded-lg transition-colors whitespace-nowrap shrink-0"
                   >
                     <span>Directions</span>
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -2026,21 +2052,21 @@ export function DiscoveryWorkspace({
                 </div>
               </div>
             ) : selectedGooglePlace ? (
-              <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 shrink-0 flex items-center gap-2">
+              <div className="px-4 py-3 border-t border-[#e4dac4] bg-[#f5efe2] shrink-0 flex items-center gap-2">
                 <a
                   href={`https://www.google.com/maps/dir/?api=1&destination=${selectedGooglePlace.lat},${selectedGooglePlace.lng}&destination_place_id=${encodeURIComponent(selectedGooglePlace.id)}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#181512] hover:bg-[#2a241d] text-[#f7f4ed] text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
                 >
-                  <MapPin className="w-3.5 h-3.5" />
+                  <MapPin className="w-3.5 h-3.5 text-[#d8b66f]" />
                   <span>Navigate on Google Maps</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </a>
                 {selectedGooglePlace.nationalPhoneNumber ? (
                   <a
                     href={`tel:${selectedGooglePlace.internationalPhoneNumber || selectedGooglePlace.nationalPhoneNumber}`}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#2f2920] bg-white border border-[#dfd4bd] hover:bg-[#efe8d8] rounded-lg transition-colors whitespace-nowrap shrink-0"
                   >
                     <Phone className="w-3.5 h-3.5" />
                     <span>Call</span>
@@ -2050,7 +2076,7 @@ export function DiscoveryWorkspace({
                     href={selectedGooglePlace.googleMapsURI}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#2f2920] bg-white border border-[#dfd4bd] hover:bg-[#efe8d8] rounded-lg transition-colors whitespace-nowrap shrink-0"
                   >
                     <span>Maps Page</span>
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -2064,21 +2090,21 @@ export function DiscoveryWorkspace({
         {/* Fullscreen Photo Lightbox Modal */}
         {selectedEntry && isLightboxOpen && selectedGalleryPhotos.length > 0 && (
           <div
-            className="fixed inset-0 z-50 bg-slate-950/92 backdrop-blur-[2px] flex flex-col"
+            className="fixed inset-0 z-50 bg-[#0b0c0e]/95 backdrop-blur-[2px] flex flex-col"
             role="dialog"
             aria-modal="true"
             aria-label={`${selectedShopName} photo gallery`}
             onClick={() => setIsLightboxOpen(false)}
           >
             <div
-              className="px-6 py-4 flex items-center justify-between gap-4 border-b border-white/10 text-white shrink-0"
+              className="px-6 py-4 flex items-center justify-between gap-4 border-b border-white/10 text-[#f7f4ed] shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="min-w-0">
-                <h3 className="text-sm sm:text-base font-semibold truncate">
+                <h3 className="font-serif text-base sm:text-lg font-semibold truncate">
                   {selectedShopName}
                 </h3>
-                <p className="text-xs text-slate-300 font-mono tabular-nums mt-0.5">
+                <p className="text-xs text-[#d8b66f] font-mono tabular-nums mt-0.5">
                   {selectedShopCategory} · Photo {safePhotoIdx + 1} of{' '}
                   {selectedGalleryPhotos.length}
                   {selectedGalleryPhotos[safePhotoIdx]?.attributionText
@@ -2117,7 +2143,7 @@ export function DiscoveryWorkspace({
                 </button>
               )}
 
-              <div className="w-full max-w-4xl max-h-[72vh] aspect-[4/3] rounded-xl overflow-hidden bg-slate-900 border border-white/10 flex items-center justify-center">
+              <div className="w-full max-w-4xl max-h-[72vh] aspect-[4/3] rounded-xl overflow-hidden bg-[#141210] border border-white/10 flex items-center justify-center">
                 <SafeImage
                   src={selectedGalleryPhotos[safePhotoIdx].url}
                   alt={`${selectedShopName} photo ${safePhotoIdx + 1}`}
@@ -2153,7 +2179,7 @@ export function DiscoveryWorkspace({
                     aria-label={`Select photo ${idx + 1}`}
                     className={`w-16 h-12 rounded-lg overflow-hidden border-2 transition-all shrink-0 ${
                       safePhotoIdx === idx
-                        ? 'border-blue-400 scale-105 shadow-lg'
+                        ? 'border-[#d8b66f] scale-105 shadow-lg'
                         : 'border-white/25 opacity-65 hover:opacity-100'
                     }`}
                   >

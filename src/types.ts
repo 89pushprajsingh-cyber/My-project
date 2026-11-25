@@ -1,23 +1,17 @@
+import { SERVICE_CATEGORY_GROUP_NAMES } from './data/serviceDirectory';
+
 export type UserRole = 'seeker' | 'provider';
 
-export const SERVICE_CATEGORIES = [
-  'Cafe & Dining',
-  'Barber & Salon',
-  'Beauty & Spa',
-  'Home Repairs',
-  'Auto & Bike',
-  'Tailoring',
-  'Wellness & Fitness',
-  'Tutoring',
-  'Other',
-] as const;
+export const SERVICE_CATEGORIES = SERVICE_CATEGORY_GROUP_NAMES;
 
-export type ServiceCategory = (typeof SERVICE_CATEGORIES)[number];
+export type ServiceCategory = string;
 
 export const VALIDATION_LIMITS = {
   DISPLAY_NAME_MAX: 80,
   SHOP_NAME_MIN: 2,
   SHOP_NAME_MAX: 100,
+  CATEGORY_MIN: 2,
+  CATEGORY_MAX: 80,
   DESCRIPTION_MIN: 5,
   DESCRIPTION_MAX: 600,
   ADDRESS_MIN: 3,
@@ -41,27 +35,27 @@ export const VALIDATION_LIMITS = {
 export const STUDIO_GALLERY_PRESETS: { label: string; category: ServiceCategory; url: string }[] = [
   {
     label: 'Neighborhood Cafe & Hot Soup',
-    category: 'Cafe & Dining',
+    category: 'Food & Restaurants',
     url: '/src/assets/images/category_cafe_soup_1795622933416.jpg',
   },
   {
     label: 'Modern Barbershop Interior',
-    category: 'Barber & Salon',
+    category: 'Personal Care & Beauty Services',
     url: '/src/assets/images/hero_barber_craft_1795619756867.jpg',
   },
   {
     label: 'Haircut & Grooming Station',
-    category: 'Barber & Salon',
+    category: 'Personal Care & Beauty Services',
     url: '/src/assets/images/category_salon_cut_1795619757806.jpg',
   },
   {
     label: 'Wellness & Spa Suite',
-    category: 'Beauty & Spa',
+    category: 'Personal Care & Beauty Services',
     url: '/src/assets/images/category_wellness_spa_1795619759050.jpg',
   },
   {
     label: 'Workshop & Repair Bench',
-    category: 'Home Repairs',
+    category: 'Repair & Maintenance Services',
     url: '/src/assets/images/category_home_repair_1795619757431.jpg',
   },
 ];

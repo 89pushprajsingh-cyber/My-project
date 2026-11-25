@@ -41,6 +41,7 @@ import { BillCheckoutModal } from './components/BillCheckoutModal';
 import { BillReceiptModal } from './components/BillReceiptModal';
 import { ChatDrawer } from './components/ChatDrawer';
 import { ReviewModal, ReviewSource } from './components/ReviewModal';
+import { FloatingAssistantChat } from './components/FloatingAssistantChat';
 
 type AppTab =
   | 'discover'
@@ -1047,6 +1048,13 @@ function AppContent() {
           }}
         />
       )}
+
+      {/* Floating AI Website Guide */}
+      <FloatingAssistantChat
+        isSignedIn={Boolean(user)}
+        userRole={userRole}
+        activeTab={user ? activeTab : 'landing'}
+      />
     </div>
   );
 

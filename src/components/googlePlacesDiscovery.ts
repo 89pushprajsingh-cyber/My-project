@@ -1,5 +1,6 @@
 /// <reference types="google.maps" />
 import { LatLngPoint, ServiceCategory } from '../types';
+import { getGoogleIncludedTypesForGroup } from '../data/serviceDirectory';
 
 export interface PlaceAuthorAttribution {
   displayName: string;
@@ -48,44 +49,35 @@ export interface GoogleMapPlaceItem {
   attributions: { provider: string; providerURI: string | null }[];
 }
 
-const CATEGORY_INCLUDED_TYPES: Record<'All' | ServiceCategory, string[]> = {
-  All: [
-    'cafe',
-    'coffee_shop',
-    'restaurant',
-    'barber_shop',
-    'hair_salon',
-    'beauty_salon',
-    'spa',
-    'car_repair',
-    'tailor',
-    'gym',
-    'electrician',
-    'plumber',
-    'store',
-    'casino',
-  ],
-  'Cafe & Dining': ['cafe', 'coffee_shop', 'restaurant', 'bakery', 'tea_house'],
-  'Barber & Salon': ['barber_shop', 'hair_salon'],
-  'Beauty & Spa': ['beauty_salon', 'spa', 'nail_salon', 'massage'],
-  'Home Repairs': ['electrician', 'plumber', 'painter', 'locksmith', 'home_improvement_store'],
-  'Auto & Bike': ['car_repair', 'car_wash', 'tire_shop', 'bicycle_store'],
-  Tailoring: ['tailor', 'laundry', 'clothing_store'],
-  'Wellness & Fitness': ['wellness_center', 'yoga_studio', 'gym', 'fitness_center', 'massage'],
-  Tutoring: ['educational_institution', 'school', 'library'],
-  Other: ['store', 'casino', 'consultant', 'pet_care', 'electronics_store', 'jewelry_store'],
-};
+const DEFAULT_ALL_INCLUDED_TYPES: string[] = [
+  'cafe',
+  'coffee_shop',
+  'restaurant',
+  'barber_shop',
+  'hair_salon',
+  'beauty_salon',
+  'spa',
+  'store',
+  'grocery_store',
+  'pharmacy',
+  'hospital',
+  'bank',
+  'car_repair',
+  'gym',
+  'hotel',
+  'casino',
+];
 
-const CATEGORY_TEXT_HINT: Record<ServiceCategory, string> = {
-  'Cafe & Dining': 'cafe',
-  'Barber & Salon': 'barber salon',
-  'Beauty & Spa': 'beauty spa',
-  'Home Repairs': 'repair service',
-  'Auto & Bike': 'auto bike repair',
-  Tailoring: 'tailor laundry',
-  'Wellness & Fitness': 'wellness gym',
-  Tutoring: 'tutoring coaching center',
-  Other: 'shop service',
+const LEGACY_INCLUDED_TYPES: Record<string, string[]> = {
+  'Cafe & Dining': ['cafe', 'coffee_shop', 'restaurant', 'bakery'],
+  'Barber & Salon': ['barber_shop', 'hair_salon'],
+  'Beauty & Spa': ['beauty_salon', 'spa'],
+  'Home Repairs': ['electrician', 'plumber', 'locksmith', 'hardware_store'],
+  'Auto & Bike': ['car_repair', 'car_wash', 'tire_shop'],
+  Tailoring: ['tailor', 'laundry', 'clothing_store'],
+  'Wellness & Fitness': ['yoga_studio', 'gym', 'fitness_center'],
+  Tutoring: ['school', 'university', 'library'],
+  Other: ['store', 'casino', 'electronics_store', 'jewelry_store'],
 };
 
 const LIST_SEARCH_FIELDS = [
@@ -252,14 +244,9 @@ export async function discoverGooglePlaces(params: {
   const trimmedSearch = searchText.trim();
   const clampedRadiusMeters = Math.min(Math.max((radiusKm ?? 6) * 1000, 1000), 50000);
 
-  if (trimmedSearch.length >= 2) {
-    const queryWithCategory =
-      category !== 'All'
-        ? `${trimmedSearch} ${CATEGORY_TEXT_HINT[category]}`
-        : trimmedSearch;
-
+  const runTextSearch = async (textQuery: string): Promise<GoogleMapPlaceItem[]> => {
     const response = await Place.searchByText({
-      textQuery: queryWithCategory,
+      textQuery,
       fields: LIST_SEARCH_FIELDS,
       locationBias: {
         center,
@@ -273,25 +260,47 @@ export async function discoverGooglePlaces(params: {
     return (response?.places ?? [])
       .map(normalizeGooglePlace)
       .filter((item): item is GoogleMapPlaceItem => item !== null);
+  };
+
+  if (trimmedSearch.length >= 2) {
+    const queryWithCategory =
+      category !== 'All' ? `${trimmedSearch} ${category}` : trimmedSearch;
+    return runTextSearch(queryWithCategory);
   }
 
-  const includedTypes = CATEGORY_INCLUDED_TYPES[category] ?? CATEGORY_INCLUDED_TYPES.All;
-  const response = await Place.searchNearby({
-    fields: LIST_SEARCH_FIELDS,
-    locationRestriction: {
-      center,
-      radius: clampedRadiusMeters,
-    },
-    includedTypes,
-    maxResultCount: 20,
-    rankPreference: SearchNearbyRankPreference.POPULARITY,
-    language: 'en',
-    internalUsageAttributionIds: ['gmp_mcp_codeassist_v1_aistudio'],
-  });
+  const groupTypes =
+    category === 'All'
+      ? DEFAULT_ALL_INCLUDED_TYPES
+      : getGoogleIncludedTypesForGroup(category) ?? LEGACY_INCLUDED_TYPES[category] ?? null;
 
-  return (response?.places ?? [])
-    .map(normalizeGooglePlace)
-    .filter((item): item is GoogleMapPlaceItem => item !== null);
+  if (!groupTypes) {
+    // Specific service from the 293-service directory (e.g., "Kirana Store", "Aadhaar Centre")
+    const query = trimmedSearch.length === 1 ? `${category} ${trimmedSearch}` : category;
+    return runTextSearch(query);
+  }
+
+  try {
+    const response = await Place.searchNearby({
+      fields: LIST_SEARCH_FIELDS,
+      locationRestriction: {
+        center,
+        radius: clampedRadiusMeters,
+      },
+      includedTypes: groupTypes,
+      maxResultCount: 20,
+      rankPreference: SearchNearbyRankPreference.POPULARITY,
+      language: 'en',
+      internalUsageAttributionIds: ['gmp_mcp_codeassist_v1_aistudio'],
+    });
+
+    return (response?.places ?? [])
+      .map(normalizeGooglePlace)
+      .filter((item): item is GoogleMapPlaceItem => item !== null);
+  } catch (err) {
+    if (isQuotaExhaustedError(err)) throw err;
+    // Fallback to text search if a specific group type isn't supported in the active region
+    return runTextSearch(category === 'All' ? 'local shops services' : category);
+  }
 }
 
 export async function fetchGooglePlaceDetails(

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -159,6 +160,120 @@ async function startServer() {
     res.json({
       mapsApiKey: process.env.VITE_GOOGLE_MAPS_API_KEY || '',
     });
+  });
+
+  app.post('/api/assistant/chat', express.json({ limit: '64kb' }), async (req, res) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      res.status(503).json({
+        error: 'Assistant is unavailable because GEMINI_API_KEY is not configured in Settings > Secrets.',
+      });
+      return;
+    }
+
+    const body = (req.body || {}) as {
+      message?: unknown;
+      history?: unknown;
+      context?: {
+        isSignedIn?: unknown;
+        role?: unknown;
+        activeTab?: unknown;
+      };
+    };
+
+    const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!rawMessage || rawMessage.length > 1500) {
+      res.status(400).json({ error: 'Please enter a message between 1 and 1500 characters.' });
+      return;
+    }
+
+    const rawHistory = Array.isArray(body.history) ? body.history.slice(-12) : [];
+    const sanitizedHistory: { role: 'user' | 'model'; parts: { text: string }[] }[] = [];
+
+    for (const item of rawHistory) {
+      if (!item || typeof item !== 'object') continue;
+      const role = (item as { role?: unknown }).role;
+      const text = (item as { text?: unknown }).text;
+      if ((role !== 'user' && role !== 'model') || typeof text !== 'string') continue;
+      const trimmedText = text.trim().slice(0, 2000);
+      if (!trimmedText) continue;
+
+      // History passed to chats.create must start with 'user' and alternate roles
+      if (sanitizedHistory.length === 0 && role !== 'user') continue;
+      const prevRole = sanitizedHistory[sanitizedHistory.length - 1]?.role;
+      if (prevRole === role) continue;
+
+      sanitizedHistory.push({ role, parts: [{ text: trimmedText }] });
+    }
+
+    // Ensure history ends on 'model' before calling chat.sendMessage
+    if (sanitizedHistory.length > 0 && sanitizedHistory[sanitizedHistory.length - 1].role === 'user') {
+      sanitizedHistory.pop();
+    }
+
+    const isSignedIn = body.context?.isSignedIn === true;
+    const roleLabel = body.context?.role === 'provider' ? 'provider' : 'seeker';
+    const tabLabel =
+      typeof body.context?.activeTab === 'string'
+        ? body.context.activeTab.slice(0, 40)
+        : 'discover';
+
+    const systemInstruction = [
+      'You are NearCraft Guide, a friendly, practical website assistant embedded inside the NearCraft web app.',
+      'Your sole job is to help visitors and signed-in users navigate and use NearCraft effortlessly.',
+      'Keep answers concise (2 to 4 short sentences or up to 4 crisp numbered steps), warm, and specific to exact NearCraft UI labels.',
+      'Never invent nonexistent buttons or features, and never mention internal APIs, secrets, or backend implementation details.',
+      '',
+      `Current user context: signedIn=${isSignedIn ? 'yes' : 'no'}, activeRole=${roleLabel}, currentPage=${tabLabel}.`,
+      '',
+      'NearCraft product guide:',
+      '1. Sign-In & Roles: On the landing page, users choose Customer Access (to find local services, book, and pay) or Provider Studio (to register a shop). Signed-in users can switch anytime via the top-right account menu -> Switch to Customer Mode / Switch to Provider Studio.',
+      '2. Finding Services (Find Services tab): Use the searchable Service Type directory (15 categories and 290+ local services from Shopping, Salons, Restaurants, Healthcare, Travel, Education, Finance, Repairs, Government, Hospitality, and Religious Places) by typing just the first letter (like B, C, G, H, S), or type any shop/dish/service keyword.',
+      '3. Location & Radius: Click "Share Live GPS" or type a neighborhood/city in "Your Live Location / Area", or pan the map and click "Search This Map Area". Drag the "Search Radius" slider (1 km to 20 km) to limit markers on the map, or click Clear for Any distance. Sort results by Nearest or Top Rated.',
+      '4. Google Maps vs Partners: Filter by All Services, Google Maps (real-world venues with hours, phone, reviews, photos, and directions), or Partners (Aadhaar-verified NearCraft shops with live menus and pricing).',
+      '5. Inspecting, Booking & Paying: Click any pin or list card to open Shop Info, Photos (click a photo for fullscreen preview), and Reviews. For NearCraft Partners, add itemized services with "+ Add" and click "Order & View Bill" (In-App Payment or Pay at Counter) to view a receipt under My Bills, or click "Schedule & Chat" for real-time messaging & appointment booking. After a completed visit or paid bill, submit a 1-5 star rating & review.',
+      '6. Provider Studio: Switch to Provider Studio -> open "Shop & KYC" to complete 12-digit Aadhaar verification, pin shop location, upload up to 3 photos, and add numbered catalog items with prices. Manage chats under "Inquiries", appointments under "Bookings", and customer invoices under "Bills & Sales".',
+    ].join('\n');
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+
+      const chat = ai.chats.create({
+        model: 'gemini-4-hydrogen',
+        history: sanitizedHistory,
+        config: {
+          systemInstruction,
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.LOW,
+          },
+        },
+      });
+
+      const result = await chat.sendMessage({ message: rawMessage });
+      const reply = (result.text ?? '').trim();
+      if (!reply) {
+        res.status(502).json({ error: 'Assistant returned an empty response. Please try again.' });
+        return;
+      }
+
+      res.json({ reply });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Assistant request failed.';
+      let status = 500;
+      if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
+        status = 429;
+      } else if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403') || msg.includes('400')) {
+        status = 400;
+      }
+      res.status(status).json({ error: msg });
+    }
   });
 
   app.post(
