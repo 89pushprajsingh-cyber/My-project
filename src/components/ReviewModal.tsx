@@ -3,19 +3,27 @@ import { doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { User } from 'firebase/auth';
 import { X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Appointment, ServiceListing, VALIDATION_LIMITS } from '../types';
+import { VALIDATION_LIMITS, ServiceListing } from '../types';
 import { StarRatingInput } from './StarRating';
+
+export interface ReviewSource {
+  id: string;
+  providerId: string;
+  shopName: string;
+  serviceItem: string;
+  seekerName: string;
+}
 
 interface ReviewModalProps {
   user: User;
-  appointment: Appointment;
+  source: ReviewSource;
   onClose: () => void;
-  onSubmitted: (appointmentId: string, rating: number) => void;
+  onSubmitted: (sourceId: string, rating: number) => void;
 }
 
 export function ReviewModal({
   user,
-  appointment,
+  source,
   onClose,
   onSubmitted,
 }: ReviewModalProps) {
@@ -40,7 +48,7 @@ export function ReviewModal({
 
     setIsSubmitting(true);
     try {
-      const serviceRef = doc(db, 'services', appointment.providerId);
+      const serviceRef = doc(db, 'services', source.providerId);
       const serviceSnap = await getDoc(serviceRef);
       if (!serviceSnap.exists()) {
         setErrorMsg('This service listing is no longer available.');
@@ -55,21 +63,21 @@ export function ReviewModal({
       const reviewRef = doc(
         db,
         'services',
-        appointment.providerId,
+        source.providerId,
         'reviews',
-        appointment.id
+        source.id
       );
 
       const batch = writeBatch(db);
       batch.set(reviewRef, {
-        appointmentId: appointment.id,
-        providerId: appointment.providerId,
+        appointmentId: source.id,
+        providerId: source.providerId,
         seekerId: user.uid,
-        reviewerName: (user.displayName || appointment.seekerName || 'Customer').slice(
+        reviewerName: (user.displayName || source.seekerName || 'Customer').slice(
           0,
           VALIDATION_LIMITS.DISPLAY_NAME_MAX
         ),
-        serviceItem: appointment.serviceItem.slice(0, 120),
+        serviceItem: source.serviceItem.slice(0, 120),
         rating,
         comment: cleanComment,
         isPublished: true,
@@ -79,12 +87,12 @@ export function ReviewModal({
       batch.update(serviceRef, {
         ratingSum: currentSum + rating,
         ratingCount: currentCount + 1,
-        lastReviewedAppointmentId: appointment.id,
+        lastReviewedAppointmentId: source.id,
         updatedAt: serverTimestamp(),
       });
 
       await batch.commit();
-      onSubmitted(appointment.id, rating);
+      onSubmitted(source.id, rating);
       onClose();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -92,10 +100,10 @@ export function ReviewModal({
         handleFirestoreError(
           err,
           OperationType.WRITE,
-          `services/${appointment.providerId}/reviews/${appointment.id}`
+          `services/${source.providerId}/reviews/${source.id}`
         );
       }
-      setErrorMsg('Unable to submit review. Please confirm this appointment is completed and has not been reviewed yet.');
+      setErrorMsg('Unable to submit review. Please confirm your visit or payment is settled and has not been reviewed yet.');
     } finally {
       setIsSubmitting(false);
     }
@@ -106,7 +114,7 @@ export function ReviewModal({
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-[1px]"
       role="dialog"
       aria-modal="true"
-      aria-label={`Review ${appointment.shopName}`}
+      aria-label={`Review ${source.shopName}`}
     >
       <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
@@ -115,7 +123,7 @@ export function ReviewModal({
               Rate Your Experience
             </h2>
             <p className="text-xs text-slate-500 truncate mt-0.5">
-              {appointment.shopName} · {appointment.serviceItem}
+              {source.shopName} · {source.serviceItem}
             </p>
           </div>
           <button

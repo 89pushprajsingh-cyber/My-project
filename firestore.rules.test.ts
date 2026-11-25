@@ -103,4 +103,21 @@ export const DIRTY_DOZEN_CASES = [
     payload: { appointmentId: 'apptDone', providerId: 'bob', seekerId: 'alice', rating: 9, comment: 'Inflated' },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '15. Terminal Paid Bill Modification',
+    path: 'bills/billPaid1',
+    authUid: 'bob',
+    existingPaymentStatus: 'paid',
+    payload: { totalAmount: 0 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '16. Seeker Spoofing Counter Payment Confirmation',
+    path: 'bills/billCounter1',
+    authUid: 'alice',
+    existingPaymentMethod: 'counter',
+    existingPaymentStatus: 'pending_counter',
+    payload: { paymentMethod: 'counter', paymentStatus: 'paid' },
+    expected: 'PERMISSION_DENIED',
+  },
 ] as const;

@@ -1,54 +1,65 @@
 import React from 'react';
 import { User } from 'firebase/auth';
 import { Calendar, Check, Clock, MessageSquare, Star, XCircle } from 'lucide-react';
-import { Appointment, AppointmentStatus, ChatThread } from '../types';
+import { Appointment, AppointmentStatus, ChatThread, UserRole } from '../types';
 import { doc, serverTimestamp, writeBatch, collection } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 
 interface MessagesInboxProps {
   user: User;
+  mode: UserRole;
   chats: ChatThread[];
   onSelectChat: (chat: ChatThread) => void;
-  onGoToMap: () => void;
+  onPrimaryAction: () => void;
 }
 
 export function MessagesInbox({
   user,
+  mode,
   chats,
   onSelectChat,
-  onGoToMap,
+  onPrimaryAction,
 }: MessagesInboxProps) {
+  const isProviderMode = mode === 'provider';
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
       <div className="pb-5 border-b border-slate-200 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Messages</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            {isProviderMode ? 'Customer Inquiries' : 'Messages'}
+          </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Real-time conversations with service providers and customers.
+            {isProviderMode
+              ? 'Direct messages and booking questions from local customers.'
+              : 'Real-time conversations with local service shops.'}
           </p>
         </div>
         <button
           type="button"
-          onClick={onGoToMap}
+          onClick={onPrimaryAction}
           className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap shrink-0"
         >
-          Browse Map
+          {isProviderMode ? 'Shop Dashboard' : 'Browse Map'}
         </button>
       </div>
 
       {chats.length === 0 ? (
         <div className="mt-8 bg-white border border-slate-200 rounded-xl p-10 text-center">
           <MessageSquare className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-          <h2 className="text-base font-semibold text-slate-900">No conversations yet</h2>
+          <h2 className="text-base font-semibold text-slate-900">
+            {isProviderMode ? 'No customer inquiries yet' : 'No conversations yet'}
+          </h2>
           <p className="mt-1 text-sm text-slate-500 max-w-md mx-auto">
-            Select any service provider on the map to start chatting or request an appointment time.
+            {isProviderMode
+              ? 'Once customers find your shop on the map and message you about availability, threads will appear here.'
+              : 'Select any service shop on the map to ask a question or propose an appointment slot.'}
           </p>
           <button
             type="button"
-            onClick={onGoToMap}
+            onClick={onPrimaryAction}
             className="mt-5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold rounded-lg"
           >
-            Find a Service on Map
+            {isProviderMode ? 'Open Shop Dashboard' : 'Find a Service on Map'}
           </button>
         </div>
       ) : (
@@ -91,21 +102,24 @@ export function MessagesInbox({
 
 interface AppointmentsViewProps {
   user: User;
+  mode: UserRole;
   appointments: Appointment[];
   reviewedRatingsByApptId: Record<string, number>;
   onOpenReview: (appt: Appointment) => void;
   onOpenChatByThread: (appt: Appointment) => void;
-  onGoToMap: () => void;
+  onPrimaryAction: () => void;
 }
 
 export function AppointmentsView({
   user,
+  mode,
   appointments,
   reviewedRatingsByApptId,
   onOpenReview,
   onOpenChatByThread,
-  onGoToMap,
+  onPrimaryAction,
 }: AppointmentsViewProps) {
+  const isProviderMode = mode === 'provider';
   const handleStatusChange = async (appt: Appointment, nextStatus: AppointmentStatus) => {
     try {
       const batch = writeBatch(db);
@@ -152,33 +166,41 @@ export function AppointmentsView({
     <div className="max-w-5xl mx-auto px-6 py-8">
       <div className="pb-5 border-b border-slate-200 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Appointments</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            {isProviderMode ? 'Requests & Bookings' : 'My Bookings'}
+          </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Track upcoming bookings you requested or received as a service provider.
+            {isProviderMode
+              ? 'Confirm incoming customer slots, manage schedules, and mark visits completed.'
+              : 'Track your upcoming appointments and share verified reviews after each visit.'}
           </p>
         </div>
         <button
           type="button"
-          onClick={onGoToMap}
+          onClick={onPrimaryAction}
           className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap shrink-0"
         >
-          Book Another Service
+          {isProviderMode ? 'Shop Dashboard' : 'Book Another Service'}
         </button>
       </div>
 
       {appointments.length === 0 ? (
         <div className="mt-8 bg-white border border-slate-200 rounded-xl p-10 text-center">
           <Calendar className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-          <h2 className="text-base font-semibold text-slate-900">No appointments scheduled</h2>
+          <h2 className="text-base font-semibold text-slate-900">
+            {isProviderMode ? 'No booking requests yet' : 'No bookings scheduled'}
+          </h2>
           <p className="mt-1 text-sm text-slate-500 max-w-md mx-auto">
-            Find a verified salon or local service provider on the map and propose a time slot directly in chat.
+            {isProviderMode
+              ? 'Incoming appointment requests from nearby customers will appear here for confirmation.'
+              : 'Find a verified salon or local specialist on the map and propose a time slot in chat.'}
           </p>
           <button
             type="button"
-            onClick={onGoToMap}
+            onClick={onPrimaryAction}
             className="mt-5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold rounded-lg"
           >
-            Explore Services
+            {isProviderMode ? 'Open Shop Dashboard' : 'Explore Services'}
           </button>
         </div>
       ) : (

@@ -23,7 +23,9 @@ import {
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType, uploadImageFile } from '../firebase';
 import {
+  CatalogItem,
   getAverageRating,
+  getServiceCatalogItems,
   LatLngPoint,
   ProviderKyc,
   SERVICE_CATEGORIES,
@@ -71,12 +73,18 @@ export function ProviderPortal({
       : DEFAULT_CENTER
   );
   const [cameraTrigger, setCameraTrigger] = useState(0);
-  const [servicesOffered, setServicesOffered] = useState<string[]>(
-    existingService?.servicesOffered?.length
-      ? existingService.servicesOffered
-      : ['Classic Haircut · ₹250', 'Beard Trim & Styling · ₹150']
+  const [catalogItems, setCatalogItems] = useState<CatalogItem[]>(
+    existingService
+      ? getServiceCatalogItems(existingService)
+      : [
+          { name: 'Classic Haircut', itemType: 'Haircut', unit: '30 mins', price: 250 },
+          { name: 'Beard Trim & Styling', itemType: 'Grooming', unit: '20 mins', price: 150 },
+        ]
   );
-  const [newServiceItem, setNewServiceItem] = useState('');
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemType, setNewItemType] = useState('Service');
+  const [newItemUnit, setNewItemUnit] = useState('1 unit');
+  const [newItemPrice, setNewItemPrice] = useState('');
   const [photoUrls, setPhotoUrls] = useState<string[]>(
     existingService?.photoUrls?.length
       ? existingService.photoUrls
@@ -106,7 +114,7 @@ export function ProviderPortal({
       setOpenHours(existingService.openHours);
       setAddress(existingService.address);
       setPinLocation({ lat: existingService.lat, lng: existingService.lng });
-      setServicesOffered(existingService.servicesOffered);
+      setCatalogItems(getServiceCatalogItems(existingService));
       setPhotoUrls(existingService.photoUrls);
       setIsActive(existingService.isActive);
     }
@@ -164,15 +172,69 @@ export function ProviderPortal({
     );
   };
 
-  const handleAddServiceItem = () => {
-    const trimmed = newServiceItem.trim().slice(0, VALIDATION_LIMITS.SERVICE_ITEM_MAX);
-    if (!trimmed) return;
-    if (servicesOffered.length >= VALIDATION_LIMITS.SERVICES_MAX_COUNT) {
-      setErrorMsg(`You can list up to ${VALIDATION_LIMITS.SERVICES_MAX_COUNT} services.`);
+  const handleAddCatalogItem = () => {
+    const cleanName = newItemName.trim().slice(0, VALIDATION_LIMITS.SERVICE_ITEM_MAX);
+    const cleanType = (newItemType.trim() || category || 'Service').slice(
+      0,
+      VALIDATION_LIMITS.ITEM_TYPE_MAX
+    );
+    const cleanUnit = newItemUnit.trim().slice(0, VALIDATION_LIMITS.ITEM_UNIT_MAX);
+    const parsedPrice = Number(newItemPrice);
+
+    if (!cleanName) {
+      setErrorMsg('Enter a product or service name before adding.');
       return;
     }
-    setServicesOffered((prev) => [...prev, trimmed]);
-    setNewServiceItem('');
+    if (newItemPrice.trim() === '' || !Number.isFinite(parsedPrice) || parsedPrice < 0 || parsedPrice > 1000000) {
+      setErrorMsg('Enter a valid price (₹0 – ₹10,00,000) for this item.');
+      return;
+    }
+    if (catalogItems.length >= VALIDATION_LIMITS.CATALOG_MAX_COUNT) {
+      setErrorMsg(`You can list up to ${VALIDATION_LIMITS.CATALOG_MAX_COUNT} products and services.`);
+      return;
+    }
+
+    setCatalogItems((prev) => [
+      ...prev,
+      {
+        name: cleanName,
+        itemType: cleanType,
+        unit: cleanUnit,
+        price: Number(parsedPrice.toFixed(2)),
+      },
+    ]);
+    setNewItemName('');
+    setNewItemPrice('');
+    setErrorMsg(null);
+  };
+
+  const handleLoadCategorySampleMenu = () => {
+    if (category === 'Cafe & Dining') {
+      setCatalogItems([
+        { name: 'Hot Tomato Herb Soup', itemType: 'Soup', unit: '1 plate', price: 140 },
+        { name: 'Sweet Corn Veg Soup', itemType: 'Soup', unit: '1 plate', price: 150 },
+        { name: 'Cream of Mushroom Soup', itemType: 'Soup', unit: '1 bowl', price: 180 },
+        { name: 'Grilled Cheese Garlic Toast', itemType: 'Snack', unit: '2 pcs', price: 120 },
+        { name: 'Artisan Filter Coffee', itemType: 'Beverage', unit: '1 cup', price: 90 },
+      ]);
+      setNewItemType('Soup');
+      setNewItemUnit('1 plate');
+    } else if (category === 'Barber & Salon') {
+      setCatalogItems([
+        { name: 'Classic Haircut', itemType: 'Haircut', unit: '30 mins', price: 250 },
+        { name: 'Skin Fade & Wash', itemType: 'Haircut', unit: '45 mins', price: 350 },
+        { name: 'Beard Trim & Styling', itemType: 'Grooming', unit: '20 mins', price: 150 },
+      ]);
+      setNewItemType('Haircut');
+      setNewItemUnit('30 mins');
+    } else {
+      setCatalogItems([
+        { name: `${category} Consultation`, itemType: 'Service', unit: '30 mins', price: 200 },
+        { name: `Standard ${category} Package`, itemType: 'Package', unit: '1 session', price: 450 },
+      ]);
+      setNewItemType('Service');
+      setNewItemUnit('1 session');
+    }
     setErrorMsg(null);
   };
 
@@ -259,14 +321,31 @@ export function ProviderPortal({
       setErrorMsg('Please search or enter your shop address and set the map pin.');
       return;
     }
-    if (servicesOffered.length === 0) {
-      setErrorMsg('Add at least one service you provide.');
+    const cleanCatalog: CatalogItem[] = catalogItems
+      .slice(0, VALIDATION_LIMITS.CATALOG_MAX_COUNT)
+      .map((item) => ({
+        name: item.name.trim().slice(0, VALIDATION_LIMITS.SERVICE_ITEM_MAX),
+        itemType: (item.itemType.trim() || category || 'Service').slice(
+          0,
+          VALIDATION_LIMITS.ITEM_TYPE_MAX
+        ),
+        unit: item.unit.trim().slice(0, VALIDATION_LIMITS.ITEM_UNIT_MAX),
+        price: Number(Math.min(1000000, Math.max(0, Number(item.price) || 0)).toFixed(2)),
+      }))
+      .filter((item) => item.name.length >= 1);
+
+    if (cleanCatalog.length === 0) {
+      setErrorMsg('Add at least one product or service with a name and price.');
       return;
     }
     if (photoUrls.length === 0) {
       setErrorMsg('Upload or select at least one service photo.');
       return;
     }
+
+    const derivedServicesOffered = cleanCatalog.map((item) =>
+      `${item.name}${item.unit ? ` (${item.unit})` : ''} · ₹${item.price}`.slice(0, 120)
+    );
 
     setIsSaving(true);
     try {
@@ -316,7 +395,8 @@ export function ProviderPortal({
           lat: Number(pinLocation.lat.toFixed(6)),
           lng: Number(pinLocation.lng.toFixed(6)),
           openHours: cleanHours,
-          servicesOffered: servicesOffered.slice(0, VALIDATION_LIMITS.SERVICES_MAX_COUNT),
+          servicesOffered: derivedServicesOffered,
+          catalogItems: cleanCatalog,
           photoUrls: photoUrls.slice(0, VALIDATION_LIMITS.PHOTOS_MAX_COUNT),
           aadhaarVerified: true,
           isActive,
@@ -334,7 +414,8 @@ export function ProviderPortal({
           lat: Number(pinLocation.lat.toFixed(6)),
           lng: Number(pinLocation.lng.toFixed(6)),
           openHours: cleanHours,
-          servicesOffered: servicesOffered.slice(0, VALIDATION_LIMITS.SERVICES_MAX_COUNT),
+          servicesOffered: derivedServicesOffered,
+          catalogItems: cleanCatalog,
           photoUrls: photoUrls.slice(0, VALIDATION_LIMITS.PHOTOS_MAX_COUNT),
           aadhaarVerified: true,
           isActive,
@@ -615,55 +696,193 @@ export function ProviderPortal({
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Services Offered (up to {VALIDATION_LIMITS.SERVICES_MAX_COUNT})
-              </label>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700">
+                    Products & Services Menu ({catalogItems.length}/{VALIDATION_LIMITS.CATALOG_MAX_COUNT})
+                  </label>
+                  <p className="text-xs text-slate-500">
+                    List every dish, product, or service with its type, portion/unit, and price (₹) so customers can view your full menu and pay cleanly.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLoadCategorySampleMenu}
+                  className="text-xs font-medium text-blue-700 hover:underline whitespace-nowrap"
+                >
+                  Load {category} Sample Menu
+                </button>
+              </div>
+
+              {/* Add Item Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg">
                 <input
                   type="text"
                   maxLength={VALIDATION_LIMITS.SERVICE_ITEM_MAX}
-                  value={newServiceItem}
-                  onChange={(e) => setNewServiceItem(e.target.value)}
+                  value={newItemName}
+                  onChange={(e) => setNewItemName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      handleAddServiceItem();
+                      handleAddCatalogItem();
                     }
                   }}
-                  placeholder="e.g., Fade Haircut & Wash · ₹300"
-                  className="flex-1 px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                  placeholder="Item name (e.g., Hot Tomato Herb Soup)"
+                  aria-label="New product or service name"
+                  className="sm:col-span-5 px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                />
+                <input
+                  type="text"
+                  maxLength={VALIDATION_LIMITS.ITEM_TYPE_MAX}
+                  value={newItemType}
+                  onChange={(e) => setNewItemType(e.target.value)}
+                  placeholder="Type (e.g., Soup)"
+                  aria-label="New item type"
+                  className="sm:col-span-2 px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                />
+                <input
+                  type="text"
+                  maxLength={VALIDATION_LIMITS.ITEM_UNIT_MAX}
+                  value={newItemUnit}
+                  onChange={(e) => setNewItemUnit(e.target.value)}
+                  placeholder="Unit (1 plate)"
+                  aria-label="New item unit"
+                  className="sm:col-span-2 px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1000000}
+                  step="any"
+                  value={newItemPrice}
+                  onChange={(e) => setNewItemPrice(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCatalogItem();
+                    }
+                  }}
+                  placeholder="Price ₹"
+                  aria-label="New item price"
+                  className="sm:col-span-2 px-3 py-2 text-sm font-mono tabular-nums bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
                 />
                 <button
                   type="button"
-                  onClick={handleAddServiceItem}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                  onClick={handleAddCatalogItem}
+                  className="sm:col-span-1 inline-flex items-center justify-center gap-1 px-3 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap"
+                  aria-label="Add product or service"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Add Item</span>
+                  <span className="sm:hidden">Add</span>
                 </button>
               </div>
-              <ul className="mt-3 divide-y divide-slate-100 border border-slate-200 rounded-lg">
-                {servicesOffered.map((item, index) => (
-                  <li
-                    key={`${item}-${index}`}
-                    className="flex items-center justify-between px-3.5 py-2.5 text-sm text-slate-700"
-                  >
-                    <span>{item}</span>
-                    {servicesOffered.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setServicesOffered((prev) => prev.filter((_, i) => i !== index))
-                        }
-                        aria-label={`Remove ${item}`}
-                        className="text-slate-400 hover:text-red-600 p-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
+
+              {/* Numbered Editable Catalog Table */}
+              <div className="mt-3 border border-slate-200 rounded-lg overflow-hidden">
+                <div className="hidden sm:grid sm:grid-cols-12 gap-2 px-3.5 py-2 bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
+                  <span className="col-span-1">#</span>
+                  <span className="col-span-4">Item / Service Name</span>
+                  <span className="col-span-2">Type</span>
+                  <span className="col-span-2">Portion / Unit</span>
+                  <span className="col-span-2 text-right">Price (₹)</span>
+                  <span className="col-span-1 text-right">Action</span>
+                </div>
+                <ul className="divide-y divide-slate-100">
+                  {catalogItems.map((item, index) => (
+                    <li
+                      key={`${index}-${item.name}`}
+                      className="px-3.5 py-2.5 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center text-sm"
+                    >
+                      <span className="sm:col-span-1 font-mono tabular-nums text-xs text-slate-400">
+                        {index + 1}.
+                      </span>
+                      <div className="sm:col-span-4">
+                        <input
+                          type="text"
+                          value={item.name}
+                          maxLength={VALIDATION_LIMITS.SERVICE_ITEM_MAX}
+                          onChange={(e) =>
+                            setCatalogItems((prev) =>
+                              prev.map((row, idx) =>
+                                idx === index ? { ...row, name: e.target.value } : row
+                              )
+                            )
+                          }
+                          aria-label={`Item ${index + 1} name`}
+                          className="w-full px-2 py-1 text-sm text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-blue-600 focus:bg-white rounded focus:outline-none"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <input
+                          type="text"
+                          value={item.itemType}
+                          maxLength={VALIDATION_LIMITS.ITEM_TYPE_MAX}
+                          onChange={(e) =>
+                            setCatalogItems((prev) =>
+                              prev.map((row, idx) =>
+                                idx === index ? { ...row, itemType: e.target.value } : row
+                              )
+                            )
+                          }
+                          aria-label={`Item ${index + 1} type`}
+                          className="w-full px-2 py-1 text-xs text-slate-600 bg-transparent border border-transparent hover:border-slate-200 focus:border-blue-600 focus:bg-white rounded focus:outline-none"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <input
+                          type="text"
+                          value={item.unit}
+                          maxLength={VALIDATION_LIMITS.ITEM_UNIT_MAX}
+                          onChange={(e) =>
+                            setCatalogItems((prev) =>
+                              prev.map((row, idx) =>
+                                idx === index ? { ...row, unit: e.target.value } : row
+                              )
+                            )
+                          }
+                          aria-label={`Item ${index + 1} unit`}
+                          className="w-full px-2 py-1 text-xs text-slate-600 bg-transparent border border-transparent hover:border-slate-200 focus:border-blue-600 focus:bg-white rounded focus:outline-none"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={1000000}
+                          step="any"
+                          value={item.price}
+                          onChange={(e) => {
+                            const nextVal = Number(e.target.value);
+                            setCatalogItems((prev) =>
+                              prev.map((row, idx) =>
+                                idx === index
+                                  ? { ...row, price: Number.isFinite(nextVal) ? nextVal : 0 }
+                                  : row
+                              )
+                            );
+                          }}
+                          aria-label={`Item ${index + 1} price`}
+                          className="w-full px-2 py-1 text-sm text-right font-mono tabular-nums font-medium text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-blue-600 focus:bg-white rounded focus:outline-none"
+                        />
+                      </div>
+                      <div className="sm:col-span-1 flex justify-end">
+                        {catalogItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCatalogItems((prev) => prev.filter((_, i) => i !== index))
+                            }
+                            aria-label={`Remove ${item.name}`}
+                            className="text-slate-400 hover:text-red-600 p-1"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           </div>
         </section>
@@ -834,7 +1053,7 @@ export function ProviderPortal({
               <p className="text-xs font-medium text-slate-500 mb-2.5">
                 Quick-pick studio photos (optional):
               </p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 {STUDIO_GALLERY_PRESETS.map((preset) => {
                   const selected = photoUrls.includes(preset.url);
                   return (

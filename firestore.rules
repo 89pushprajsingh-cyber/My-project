@@ -83,7 +83,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'ownerId', 'ownerName', 'shopName', 'category', 'description',
-          'address', 'lat', 'lng', 'openHours', 'servicesOffered',
+          'address', 'lat', 'lng', 'openHours', 'servicesOffered', 'catalogItems',
           'photoUrls', 'aadhaarVerified', 'isActive',
           'ratingSum', 'ratingCount', 'lastReviewedAppointmentId',
           'createdAt', 'updatedAt'
@@ -93,7 +93,7 @@ service cloud.firestore {
         && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80
         && data.shopName is string && data.shopName.size() >= 2 && data.shopName.size() <= 100
         && data.category in [
-          'Barber & Salon', 'Beauty & Spa', 'Home Repairs',
+          'Cafe & Dining', 'Barber & Salon', 'Beauty & Spa', 'Home Repairs',
           'Auto & Bike', 'Tailoring', 'Wellness & Fitness', 'Tutoring', 'Other'
         ]
         && data.description is string && data.description.size() >= 5 && data.description.size() <= 600
@@ -101,8 +101,23 @@ service cloud.firestore {
         && data.lat is number && data.lat >= -90.0 && data.lat <= 90.0
         && data.lng is number && data.lng >= -180.0 && data.lng <= 180.0
         && data.openHours is string && data.openHours.size() >= 2 && data.openHours.size() <= 80
-        && data.servicesOffered is list && data.servicesOffered.size() >= 1 && data.servicesOffered.size() <= 10
-        && data.servicesOffered[0] is string && data.servicesOffered[0].size() >= 1 && data.servicesOffered[0].size() <= 100
+        && data.servicesOffered is list && data.servicesOffered.size() >= 1 && data.servicesOffered.size() <= 20
+        && data.servicesOffered[0] is string && data.servicesOffered[0].size() >= 1 && data.servicesOffered[0].size() <= 120
+        && (
+          !('catalogItems' in data)
+          || (
+            data.catalogItems is list
+            && data.catalogItems.size() >= 1
+            && data.catalogItems.size() <= 20
+            && data.catalogItems[0] is map
+            && data.catalogItems[0].keys().hasAll(['name', 'itemType', 'unit', 'price'])
+            && data.catalogItems[0].keys().hasOnly(['name', 'itemType', 'unit', 'price'])
+            && data.catalogItems[0].name is string && data.catalogItems[0].name.size() >= 1 && data.catalogItems[0].name.size() <= 100
+            && data.catalogItems[0].itemType is string && data.catalogItems[0].itemType.size() >= 1 && data.catalogItems[0].itemType.size() <= 40
+            && data.catalogItems[0].unit is string && data.catalogItems[0].unit.size() <= 40
+            && data.catalogItems[0].price is number && data.catalogItems[0].price >= 0 && data.catalogItems[0].price <= 1000000
+          )
+        )
         && data.photoUrls is list && data.photoUrls.size() >= 1 && data.photoUrls.size() <= 3
         && isValidImagePath(data.photoUrls[0])
         && data.aadhaarVerified is bool && data.aadhaarVerified == true
@@ -196,6 +211,48 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidBill(data) {
+      return data.keys().hasAll([
+          'billNumber', 'seekerId', 'seekerName', 'providerId', 'shopName',
+          'shopAddress', 'items', 'subtotal', 'taxAmount', 'totalAmount',
+          'paymentMethod', 'paymentStatus', 'receiptCode', 'notes',
+          'appointmentId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'billNumber', 'seekerId', 'seekerName', 'providerId', 'shopName',
+          'shopAddress', 'items', 'subtotal', 'taxAmount', 'totalAmount',
+          'paymentMethod', 'paymentStatus', 'receiptCode', 'notes',
+          'appointmentId', 'paidAt', 'createdAt', 'updatedAt'
+        ])
+        && data.billNumber is string && data.billNumber.size() >= 4 && data.billNumber.size() <= 40
+        && isValidId(data.seekerId)
+        && data.seekerName is string && data.seekerName.size() >= 1 && data.seekerName.size() <= 80
+        && isValidId(data.providerId)
+        && data.shopName is string && data.shopName.size() >= 1 && data.shopName.size() <= 100
+        && data.shopAddress is string && data.shopAddress.size() >= 3 && data.shopAddress.size() <= 240
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 20
+        && data.items[0] is map
+        && data.items[0].keys().hasAll(['name', 'itemType', 'unit', 'quantity', 'unitPrice', 'lineTotal'])
+        && data.items[0].keys().hasOnly(['name', 'itemType', 'unit', 'quantity', 'unitPrice', 'lineTotal'])
+        && data.items[0].name is string && data.items[0].name.size() >= 1 && data.items[0].name.size() <= 100
+        && data.items[0].itemType is string && data.items[0].itemType.size() >= 1 && data.items[0].itemType.size() <= 40
+        && data.items[0].unit is string && data.items[0].unit.size() <= 40
+        && data.items[0].quantity is int && data.items[0].quantity >= 1 && data.items[0].quantity <= 99
+        && data.items[0].unitPrice is number && data.items[0].unitPrice >= 0 && data.items[0].unitPrice <= 1000000
+        && data.items[0].lineTotal is number && data.items[0].lineTotal >= 0 && data.items[0].lineTotal <= 10000000
+        && data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 10000000
+        && data.taxAmount is number && data.taxAmount >= 0 && data.taxAmount <= 1000000
+        && data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 11000000
+        && data.paymentMethod in ['in_app', 'counter']
+        && data.paymentStatus in ['paid', 'pending_counter']
+        && data.receiptCode is string && data.receiptCode.size() <= 64
+        && data.notes is string && data.notes.size() <= 300
+        && data.appointmentId is string && data.appointmentId.size() <= 128
+        && (!('paidAt' in data) || data.paidAt is timestamp)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // --- Collection Rules ---
 
     match /users/{userId} {
@@ -274,8 +331,8 @@ service cloud.firestore {
                 && incoming().lastReviewedAppointmentId == existing().lastReviewedAppointmentId
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                   'ownerName', 'shopName', 'category', 'description', 'address',
-                  'lat', 'lng', 'openHours', 'servicesOffered', 'photoUrls',
-                  'aadhaarVerified', 'isActive', 'updatedAt'
+                  'lat', 'lng', 'openHours', 'servicesOffered', 'catalogItems',
+                  'photoUrls', 'aadhaarVerified', 'isActive', 'updatedAt'
                 ])
               )
               ||
@@ -286,8 +343,8 @@ service cloud.firestore {
                 && incoming().lastReviewedAppointmentId == ''
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                   'ownerName', 'shopName', 'category', 'description', 'address',
-                  'lat', 'lng', 'openHours', 'servicesOffered', 'photoUrls',
-                  'aadhaarVerified', 'isActive', 'ratingSum', 'ratingCount',
+                  'lat', 'lng', 'openHours', 'servicesOffered', 'catalogItems',
+                  'photoUrls', 'aadhaarVerified', 'isActive', 'ratingSum', 'ratingCount',
                   'lastReviewedAppointmentId', 'updatedAt'
                 ])
               )
@@ -328,9 +385,20 @@ service cloud.firestore {
           && isValidReview(incoming(), providerId, reviewId)
           && incoming().createdAt == request.time
           && exists(/databases/$(database)/documents/services/$(providerId))
-          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.seekerId == request.auth.uid
-          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.providerId == providerId
-          && get(/databases/$(database)/documents/appointments/$(reviewId)).data.status == 'completed'
+          && (
+            (
+              exists(/databases/$(database)/documents/appointments/$(reviewId))
+              && get(/databases/$(database)/documents/appointments/$(reviewId)).data.seekerId == request.auth.uid
+              && get(/databases/$(database)/documents/appointments/$(reviewId)).data.providerId == providerId
+              && get(/databases/$(database)/documents/appointments/$(reviewId)).data.status == 'completed'
+            )
+            || (
+              exists(/databases/$(database)/documents/bills/$(reviewId))
+              && get(/databases/$(database)/documents/bills/$(reviewId)).data.seekerId == request.auth.uid
+              && get(/databases/$(database)/documents/bills/$(reviewId)).data.providerId == providerId
+              && get(/databases/$(database)/documents/bills/$(reviewId)).data.paymentStatus == 'paid'
+            )
+          )
           && getAfter(/databases/$(database)/documents/services/$(providerId)).data.lastReviewedAppointmentId == reviewId
           && getAfter(/databases/$(database)/documents/services/$(providerId)).data.ratingCount == get(/databases/$(database)/documents/services/$(providerId)).data.ratingCount + 1;
         allow update, delete: if false;
@@ -423,6 +491,68 @@ service cloud.firestore {
             request.auth.uid == existing().seekerId
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
             && incoming().status == 'cancelled'
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /bills/{billId} {
+      allow get: if isSignedIn()
+        && isValidId(billId)
+        && (existing().seekerId == request.auth.uid || existing().providerId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (resource.data.seekerId == request.auth.uid || resource.data.providerId == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(billId)
+        && isValidBill(incoming())
+        && incoming().seekerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/services/$(incoming().providerId))
+        && (
+          (
+            incoming().paymentMethod == 'in_app'
+            && incoming().paymentStatus == 'paid'
+            && ('paidAt' in incoming())
+            && incoming().paidAt == request.time
+            && incoming().receiptCode.size() >= 4
+          )
+          || (
+            incoming().paymentMethod == 'counter'
+            && incoming().paymentStatus == 'pending_counter'
+            && !('paidAt' in incoming())
+          )
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(billId)
+        && isValidBill(incoming())
+        && existing().paymentStatus != 'paid'
+        && incoming().seekerId == existing().seekerId
+        && incoming().providerId == existing().providerId
+        && incoming().billNumber == existing().billNumber
+        && incoming().shopName == existing().shopName
+        && incoming().shopAddress == existing().shopAddress
+        && incoming().items == existing().items
+        && incoming().subtotal == existing().subtotal
+        && incoming().taxAmount == existing().taxAmount
+        && incoming().totalAmount == existing().totalAmount
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().paymentStatus == 'paid'
+        && ('paidAt' in incoming())
+        && incoming().paidAt == request.time
+        && incoming().receiptCode.size() >= 4
+        && (
+          (
+            request.auth.uid == existing().providerId
+            && existing().paymentMethod == 'counter'
+            && incoming().paymentMethod == 'counter'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paidAt', 'receiptCode', 'updatedAt'])
+          )
+          || (
+            request.auth.uid == existing().seekerId
+            && incoming().paymentMethod == 'in_app'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['paymentMethod', 'paymentStatus', 'paidAt', 'receiptCode', 'updatedAt'])
           )
         );
       allow delete: if false;

@@ -12,7 +12,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { LogOut } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, LogOut } from 'lucide-react';
 import {
   auth,
   db,
@@ -23,7 +23,9 @@ import {
 } from './firebase';
 import {
   Appointment,
+  BillLineItem,
   ChatThread,
+  ServiceBill,
   ServiceListing,
   UserRole,
   VALIDATION_LIMITS,
@@ -32,11 +34,21 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LandingView } from './components/LandingView';
 import { DiscoveryWorkspace } from './components/DiscoveryWorkspace';
 import { ProviderPortal } from './components/ProviderPortal';
+import { ProviderDashboard } from './components/ProviderDashboard';
 import { AppointmentsView, MessagesInbox } from './components/InboxViews';
+import { BillsView } from './components/BillsView';
+import { BillCheckoutModal } from './components/BillCheckoutModal';
+import { BillReceiptModal } from './components/BillReceiptModal';
 import { ChatDrawer } from './components/ChatDrawer';
-import { ReviewModal } from './components/ReviewModal';
+import { ReviewModal, ReviewSource } from './components/ReviewModal';
 
-type AppTab = 'discover' | 'messages' | 'appointments' | 'provider';
+type AppTab =
+  | 'discover'
+  | 'appointments'
+  | 'bills'
+  | 'messages'
+  | 'provider-dashboard'
+  | 'provider';
 
 interface ActiveChatContext {
   chatId: string;
@@ -51,8 +63,11 @@ function AppContent() {
   const [authReady, setAuthReady] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<UserRole>('seeker');
   const [activeTab, setActiveTab] = useState<AppTab>('discover');
-  const intendedRoleRef = useRef<UserRole>('seeker');
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const explicitSignInRoleRef = useRef<UserRole | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
   const [mapsApiKey, setMapsApiKey] = useState<string>(
@@ -68,11 +83,38 @@ function AppContent() {
   const [providerChats, setProviderChats] = useState<ChatThread[]>([]);
   const [seekerAppointments, setSeekerAppointments] = useState<Appointment[]>([]);
   const [providerAppointments, setProviderAppointments] = useState<Appointment[]>([]);
+  const [seekerBills, setSeekerBills] = useState<ServiceBill[]>([]);
+  const [providerBills, setProviderBills] = useState<ServiceBill[]>([]);
 
   const [activeChat, setActiveChat] = useState<ActiveChatContext | null>(null);
-  const [reviewedRatingsByApptId, setReviewedRatingsByApptId] = useState<Record<string, number>>({});
-  const [reviewTargetAppt, setReviewTargetAppt] = useState<Appointment | null>(null);
-  const checkedReviewApptIdsRef = useRef<Set<string>>(new Set());
+  const [checkoutContext, setCheckoutContext] = useState<{
+    service: ServiceListing;
+    items: BillLineItem[];
+  } | null>(null);
+  const [activeReceiptBillId, setActiveReceiptBillId] = useState<string | null>(null);
+  const [activeReceiptFallback, setActiveReceiptFallback] = useState<ServiceBill | null>(null);
+
+  const [reviewedRatingsBySourceId, setReviewedRatingsBySourceId] = useState<Record<string, number>>({});
+  const [reviewTarget, setReviewTarget] = useState<ReviewSource | null>(null);
+  const checkedReviewSourceIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!showAccountMenu) return;
+    const onPointerDown = (ev: MouseEvent) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(ev.target as Node)) {
+        setShowAccountMenu(false);
+      }
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setShowAccountMenu(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showAccountMenu]);
 
   useEffect(() => {
     const onQuotaExceeded = () => setMapsQuotaExceeded(true);
@@ -106,6 +148,9 @@ function AppContent() {
 
       if (nextUser) {
         const userRef = doc(db, 'users', nextUser.uid);
+        const requestedRole = explicitSignInRoleRef.current;
+        explicitSignInRoleRef.current = null;
+
         try {
           const snap = await getDoc(userRef);
           const safeDisplayName = (nextUser.displayName || nextUser.email || 'User').slice(
@@ -117,23 +162,32 @@ function AppContent() {
               ? nextUser.photoURL.slice(0, 500)
               : '';
 
+          let resolvedRole: UserRole = requestedRole || 'seeker';
+
           if (!snap.exists()) {
             await setDoc(userRef, {
               uid: nextUser.uid,
               displayName: safeDisplayName,
               email: (nextUser.email || '').slice(0, 160),
               photoURL: safePhoto,
-              role: intendedRoleRef.current,
+              role: resolvedRole,
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
           } else {
+            const storedRole: UserRole =
+              snap.data()?.role === 'provider' ? 'provider' : 'seeker';
+            resolvedRole = requestedRole || storedRole;
             await updateDoc(userRef, {
               displayName: safeDisplayName,
               photoURL: safePhoto,
+              role: resolvedRole,
               updatedAt: serverTimestamp(),
             });
           }
+
+          setUserRole(resolvedRole);
+          setActiveTab(resolvedRole === 'provider' ? 'provider-dashboard' : 'discover');
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('Missing or insufficient permissions')) {
@@ -141,16 +195,24 @@ function AppContent() {
           }
         }
       } else {
+        setUserRole('seeker');
+        setActiveTab('discover');
+        setShowAccountMenu(false);
         setPublicServices([]);
         setOwnService(null);
         setSeekerChats([]);
         setProviderChats([]);
         setSeekerAppointments([]);
         setProviderAppointments([]);
+        setSeekerBills([]);
+        setProviderBills([]);
         setActiveChat(null);
-        setReviewedRatingsByApptId({});
-        setReviewTargetAppt(null);
-        checkedReviewApptIdsRef.current.clear();
+        setCheckoutContext(null);
+        setActiveReceiptBillId(null);
+        setActiveReceiptFallback(null);
+        setReviewedRatingsBySourceId({});
+        setReviewTarget(null);
+        checkedReviewSourceIdsRef.current.clear();
       }
     });
 
@@ -260,6 +322,34 @@ function AppContent() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'appointments')
     );
 
+    const seekerBillsQ = query(
+      collection(db, 'bills'),
+      where('seekerId', '==', user.uid)
+    );
+    const unsubSeekerBills = onSnapshot(
+      seekerBillsQ,
+      (snap) => {
+        setSeekerBills(
+          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ServiceBill, 'id'>) }))
+        );
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'bills')
+    );
+
+    const providerBillsQ = query(
+      collection(db, 'bills'),
+      where('providerId', '==', user.uid)
+    );
+    const unsubProviderBills = onSnapshot(
+      providerBillsQ,
+      (snap) => {
+        setProviderBills(
+          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ServiceBill, 'id'>) }))
+        );
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'bills')
+    );
+
     return () => {
       unsubPublicServices();
       unsubOwnService();
@@ -267,6 +357,8 @@ function AppContent() {
       unsubProviderChats();
       unsubSeekerAppts();
       unsubProviderAppts();
+      unsubSeekerBills();
+      unsubProviderBills();
     };
   }, [authReady, user]);
 
@@ -277,15 +369,37 @@ function AppContent() {
     return 0;
   };
 
-  const mergedChats = useMemo(() => {
-    const byId: Record<string, ChatThread> = {};
-    for (const c of [...seekerChats, ...providerChats]) {
-      byId[c.id] = c;
-    }
-    return Object.values(byId).sort(
-      (a, b) => toMillis(b.lastMessageAt) - toMillis(a.lastMessageAt)
-    );
-  }, [seekerChats, providerChats]);
+  const sortedSeekerChats = useMemo(
+    () =>
+      [...seekerChats].sort(
+        (a, b) => toMillis(b.lastMessageAt) - toMillis(a.lastMessageAt)
+      ),
+    [seekerChats]
+  );
+
+  const sortedProviderChats = useMemo(
+    () =>
+      [...providerChats].sort(
+        (a, b) => toMillis(b.lastMessageAt) - toMillis(a.lastMessageAt)
+      ),
+    [providerChats]
+  );
+
+  const sortedSeekerAppointments = useMemo(
+    () =>
+      [...seekerAppointments].sort(
+        (a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)
+      ),
+    [seekerAppointments]
+  );
+
+  const sortedProviderAppointments = useMemo(
+    () =>
+      [...providerAppointments].sort(
+        (a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)
+      ),
+    [providerAppointments]
+  );
 
   const mergedAppointments = useMemo(() => {
     const byId: Record<string, Appointment> = {};
@@ -297,28 +411,74 @@ function AppContent() {
     );
   }, [seekerAppointments, providerAppointments]);
 
+  const sortedSeekerBills = useMemo(
+    () =>
+      [...seekerBills].sort(
+        (a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)
+      ),
+    [seekerBills]
+  );
+
+  const sortedProviderBills = useMemo(
+    () =>
+      [...providerBills].sort(
+        (a, b) => toMillis(b.createdAt) - toMillis(a.createdAt)
+      ),
+    [providerBills]
+  );
+
+  const pendingCounterBillsCount = useMemo(
+    () => sortedProviderBills.filter((b) => b.paymentStatus === 'pending_counter').length,
+    [sortedProviderBills]
+  );
+
+  const activeReceiptBill = useMemo(() => {
+    if (!activeReceiptBillId) return null;
+    return (
+      sortedSeekerBills.find((b) => b.id === activeReceiptBillId) ||
+      sortedProviderBills.find((b) => b.id === activeReceiptBillId) ||
+      (activeReceiptFallback?.id === activeReceiptBillId ? activeReceiptFallback : null)
+    );
+  }, [activeReceiptBillId, sortedSeekerBills, sortedProviderBills, activeReceiptFallback]);
+
   useEffect(() => {
     if (!user) return;
-    const completedSeekerAppts = mergedAppointments.filter(
-      (appt) =>
+    const reviewCandidates: { id: string; providerId: string }[] = [];
+
+    for (const appt of mergedAppointments) {
+      if (
         appt.status === 'completed' &&
         appt.seekerId === user.uid &&
-        !checkedReviewApptIdsRef.current.has(appt.id)
-    );
-    if (completedSeekerAppts.length === 0) return;
+        !checkedReviewSourceIdsRef.current.has(appt.id)
+      ) {
+        reviewCandidates.push({ id: appt.id, providerId: appt.providerId });
+      }
+    }
+
+    for (const bill of seekerBills) {
+      if (
+        bill.paymentStatus === 'paid' &&
+        bill.seekerId === user.uid &&
+        !checkedReviewSourceIdsRef.current.has(bill.id)
+      ) {
+        reviewCandidates.push({ id: bill.id, providerId: bill.providerId });
+      }
+    }
+
+    if (reviewCandidates.length === 0) return;
 
     let cancelled = false;
-    completedSeekerAppts.forEach((appt) => {
-      checkedReviewApptIdsRef.current.add(appt.id);
-      const reviewPath = `services/${appt.providerId}/reviews/${appt.id}`;
-      void getDoc(doc(db, 'services', appt.providerId, 'reviews', appt.id))
+    reviewCandidates.forEach((candidate) => {
+      checkedReviewSourceIdsRef.current.add(candidate.id);
+      const reviewPath = `services/${candidate.providerId}/reviews/${candidate.id}`;
+      void getDoc(doc(db, 'services', candidate.providerId, 'reviews', candidate.id))
         .then((snap) => {
           if (!cancelled && snap.exists()) {
             const ratingVal = snap.data()?.rating;
             if (typeof ratingVal === 'number') {
-              setReviewedRatingsByApptId((prev) => ({
+              setReviewedRatingsBySourceId((prev) => ({
                 ...prev,
-                [appt.id]: ratingVal,
+                [candidate.id]: ratingVal,
               }));
             }
           }
@@ -334,22 +494,59 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, [user, mergedAppointments]);
+  }, [user, mergedAppointments, seekerBills]);
+
+  const openReviewForAppointment = (appt: Appointment) => {
+    setReviewTarget({
+      id: appt.id,
+      providerId: appt.providerId,
+      shopName: appt.shopName,
+      serviceItem: appt.serviceItem,
+      seekerName: appt.seekerName,
+    });
+  };
+
+  const openReviewForBill = (bill: ServiceBill) => {
+    setReviewTarget({
+      id: bill.id,
+      providerId: bill.providerId,
+      shopName: bill.shopName,
+      serviceItem: bill.items.map((i) => `${i.quantity}x ${i.name}`).join(', ').slice(0, 120),
+      seekerName: bill.seekerName,
+    });
+  };
 
   const handleSignIn = async (intendedRole: UserRole) => {
-    intendedRoleRef.current = intendedRole;
+    explicitSignInRoleRef.current = intendedRole;
     setIsSigningIn(true);
     setAuthError(null);
     try {
       await signInWithGoogle();
-      setActiveTab(intendedRole === 'provider' ? 'provider' : 'discover');
     } catch (err) {
+      explicitSignInRoleRef.current = null;
       const msg = err instanceof Error ? err.message : 'Unable to sign in with Google.';
       if (!msg.includes('popup-closed-by-user')) {
         setAuthError(msg);
       }
     } finally {
       setIsSigningIn(false);
+    }
+  };
+
+  const handleSwitchRole = async (nextRole: UserRole) => {
+    if (!user) return;
+    setShowAccountMenu(false);
+    setActiveChat(null);
+    setUserRole(nextRole);
+    setActiveTab(nextRole === 'provider' ? 'provider-dashboard' : 'discover');
+
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        role: nextRole,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
     }
   };
 
@@ -375,8 +572,14 @@ function AppContent() {
 
   const mapsReady = Boolean(mapsApiKey);
 
+  const isGuestLanding = authReady && !user;
+
   const appShell = (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div
+      className={`min-h-screen flex flex-col ${
+        isGuestLanding ? 'bg-[#0b0c0e] text-stone-100' : 'bg-slate-50 text-slate-900'
+      }`}
+    >
       {/* Required Maps Demo Quota Banner (Case A) */}
       {mapsQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
@@ -396,143 +599,272 @@ function AppContent() {
       )}
 
       {/* Three-Zone Top Bar */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
+      <header
+        className={`sticky top-0 z-30 border-b transition-colors ${
+          isGuestLanding
+            ? 'bg-[#0b0c0e]/95 backdrop-blur-md border-stone-800/80 text-stone-100'
+            : 'bg-white border-slate-200 text-slate-900'
+        }`}
+      >
         <div className="max-w-full mx-auto px-6 h-16 flex items-center justify-between gap-8">
           {/* Zone 1: Single-element brand wordmark */}
           <button
             type="button"
-            onClick={() => setActiveTab('discover')}
-            className="text-xl font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
+            onClick={() =>
+              setActiveTab(userRole === 'provider' ? 'provider-dashboard' : 'discover')
+            }
+            className={`whitespace-nowrap shrink-0 tracking-tight ${
+              isGuestLanding
+                ? 'font-serif text-2xl font-semibold text-[#f7f4ed] tracking-wide'
+                : 'text-xl font-extrabold text-slate-900'
+            }`}
           >
             NearCraft
           </button>
 
-          {/* Zone 2: Concise single-line nav links */}
+          {/* Zone 2: Concise single-line nav links strictly scoped to active user role */}
           {user ? (
-            <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
-              <button
-                type="button"
-                onClick={() => setActiveTab('discover')}
-                className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
-                  activeTab === 'discover'
-                    ? 'border-blue-700 text-slate-900'
-                    : 'border-transparent text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Discover Map
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('messages')}
-                className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
-                  activeTab === 'messages'
-                    ? 'border-blue-700 text-slate-900'
-                    : 'border-transparent text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Messages
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('appointments')}
-                className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
-                  activeTab === 'appointments'
-                    ? 'border-blue-700 text-slate-900'
-                    : 'border-transparent text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Appointments
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('provider')}
-                className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
-                  activeTab === 'provider'
-                    ? 'border-blue-700 text-slate-900'
-                    : 'border-transparent text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Provider Portal
-              </button>
-            </nav>
+            userRole === 'seeker' ? (
+              <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('discover')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'discover'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Find Services
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('appointments')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'appointments'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  My Bookings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('bills')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'bills'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  My Bills
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('messages')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'messages'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Messages
+                </button>
+              </nav>
+            ) : (
+              <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('provider-dashboard')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'provider-dashboard'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Shop Dashboard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('appointments')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'appointments'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Bookings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('bills')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'bills'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Bills & Sales
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('messages')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'messages'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Inquiries
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('provider')}
+                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                    activeTab === 'provider'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Shop & KYC
+                </button>
+              </nav>
+            )
           ) : (
-            <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
-              <a href="#how-it-works" className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
-                How It Works
+            <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-stone-300">
+              <a
+                href="#featured-venues"
+                className="hover:text-[#f7f4ed] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+              >
+                Venues
               </a>
-              <a href="#for-providers" className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
-                Service Categories
+              <a
+                href="#how-it-works"
+                className="hover:text-[#f7f4ed] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+              >
+                Concierge Flow
               </a>
               <button
                 type="button"
                 disabled={isSigningIn}
                 onClick={() => void handleSignIn('seeker')}
-                className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+                className="hover:text-[#f7f4ed] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
               >
-                Find Services
+                Guest Discovery
               </button>
               <button
                 type="button"
                 disabled={isSigningIn}
                 onClick={() => void handleSignIn('provider')}
-                className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+                className="hover:text-[#f7f4ed] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
               >
-                List a Shop
+                Partner Studio
               </button>
             </nav>
           )}
 
-          {/* Zone 3: Primary Action */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 3: Single Primary Action / Account Menu */}
+          <div className="relative flex items-center shrink-0" ref={accountMenuRef}>
             {user ? (
-              <button
-                type="button"
-                onClick={() => void signOutUser()}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
-              >
-                <span className="max-w-[140px] truncate">
-                  {user.displayName || user.email}
-                </span>
-                <LogOut className="w-3.5 h-3.5 text-slate-500" />
-              </button>
+              <>
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={showAccountMenu}
+                  onClick={() => setShowAccountMenu((prev) => !prev)}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                >
+                  <span className="max-w-[140px] truncate">
+                    {user.displayName || user.email}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                </button>
+
+                {showAccountMenu && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-2 w-60 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-40"
+                  >
+                    <div className="px-3.5 py-2 border-b border-slate-100">
+                      <p className="text-xs font-semibold text-slate-900 truncate">
+                        {user.displayName || 'Signed-In Account'}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {userRole === 'provider' ? 'Service Provider Studio' : 'Customer Discovery Mode'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() =>
+                        void handleSwitchRole(userRole === 'provider' ? 'seeker' : 'provider')
+                      }
+                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors"
+                    >
+                      <ArrowLeftRight className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                      <span>
+                        {userRole === 'provider'
+                          ? 'Switch to Customer Mode'
+                          : 'Switch to Provider Studio'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowAccountMenu(false);
+                        void signOutUser();
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-red-700 hover:bg-red-50 flex items-center gap-2 transition-colors border-t border-slate-100"
+                    >
+                      <LogOut className="w-3.5 h-3.5 shrink-0" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                )}
+              </>
             ) : (
               <button
                 type="button"
                 disabled={isSigningIn}
                 onClick={() => void handleSignIn('seeker')}
-                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                className="px-4 py-2 text-xs font-semibold text-stone-950 bg-[#c8a45d] hover:bg-[#d8b66f] disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
-                {isSigningIn ? 'Signing In...' : 'Sign In'}
+                {isSigningIn ? 'Signing In...' : 'Member Sign In'}
               </button>
             )}
           </div>
         </div>
 
-        {/* Mobile Tab Navigation */}
+        {/* Mobile Tab Navigation (Scoped by Role) */}
         {user && (
           <div className="md:hidden border-t border-slate-100 px-4 py-2 flex items-center gap-4 overflow-x-auto text-xs font-medium">
-            {(['discover', 'messages', 'appointments', 'provider'] as AppTab[]).map((tab) => {
-              const label =
-                tab === 'discover'
-                  ? 'Discover'
-                  : tab === 'messages'
-                    ? 'Messages'
-                    : tab === 'appointments'
-                      ? 'Appointments'
-                      : 'Provider';
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setActiveTab(tab)}
-                  className={`py-1 whitespace-nowrap shrink-0 ${
-                    activeTab === tab ? 'text-blue-700 font-semibold' : 'text-slate-600'
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
+            {(userRole === 'seeker'
+              ? ([
+                  { id: 'discover', label: 'Find Services' },
+                  { id: 'appointments', label: 'My Bookings' },
+                  { id: 'bills', label: 'My Bills' },
+                  { id: 'messages', label: 'Messages' },
+                ] as { id: AppTab; label: string }[])
+              : ([
+                  { id: 'provider-dashboard', label: 'Dashboard' },
+                  { id: 'appointments', label: 'Bookings' },
+                  { id: 'bills', label: 'Bills & Sales' },
+                  { id: 'messages', label: 'Inquiries' },
+                  { id: 'provider', label: 'Shop & KYC' },
+                ] as { id: AppTab; label: string }[])
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`py-1 whitespace-nowrap shrink-0 ${
+                  activeTab === tab.id ? 'text-blue-700 font-semibold' : 'text-slate-600'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
         )}
       </header>
@@ -550,48 +882,25 @@ function AppContent() {
         />
       ) : (
         <div className="flex-1">
-          {activeTab === 'discover' && (
+          {userRole === 'seeker' && activeTab === 'discover' && (
             <DiscoveryWorkspace
               services={publicServices}
               isLoadingServices={isLoadingServices}
               mapsReady={mapsReady}
               onOpenChat={handleOpenChatWithService}
-              onGoToProviderPortal={() => setActiveTab('provider')}
+              onStartCheckout={(service, items) => setCheckoutContext({ service, items })}
             />
           )}
 
-          {activeTab === 'provider' && (
-            <ProviderPortal
+          {userRole === 'provider' && activeTab === 'provider-dashboard' && (
+            <ProviderDashboard
               user={user}
-              existingService={ownService}
-              mapsReady={mapsReady}
-              onSaved={() => setActiveTab('discover')}
-            />
-          )}
-
-          {activeTab === 'messages' && (
-            <MessagesInbox
-              user={user}
-              chats={mergedChats}
-              onSelectChat={(chat) =>
-                setActiveChat({
-                  chatId: chat.id,
-                  seekerId: chat.seekerId,
-                  seekerName: chat.seekerName,
-                  providerId: chat.providerId,
-                  shopName: chat.shopName,
-                })
-              }
-              onGoToMap={() => setActiveTab('discover')}
-            />
-          )}
-
-          {activeTab === 'appointments' && (
-            <AppointmentsView
-              user={user}
-              appointments={mergedAppointments}
-              reviewedRatingsByApptId={reviewedRatingsByApptId}
-              onOpenReview={(appt) => setReviewTargetAppt(appt)}
+              ownService={ownService}
+              appointments={sortedProviderAppointments}
+              pendingCounterBillsCount={pendingCounterBillsCount}
+              onEditShop={() => setActiveTab('provider')}
+              onOpenAllBookings={() => setActiveTab('appointments')}
+              onOpenBills={() => setActiveTab('bills')}
               onOpenChatByThread={(appt) =>
                 setActiveChat({
                   chatId: appt.chatId,
@@ -601,7 +910,73 @@ function AppContent() {
                   shopName: appt.shopName,
                 })
               }
-              onGoToMap={() => setActiveTab('discover')}
+            />
+          )}
+
+          {userRole === 'provider' && activeTab === 'provider' && (
+            <ProviderPortal
+              user={user}
+              existingService={ownService}
+              mapsReady={mapsReady}
+              onSaved={() => setActiveTab('provider-dashboard')}
+            />
+          )}
+
+          {activeTab === 'bills' && (
+            <BillsView
+              mode={userRole}
+              bills={userRole === 'provider' ? sortedProviderBills : sortedSeekerBills}
+              reviewedRatingsBySourceId={reviewedRatingsBySourceId}
+              onOpenReviewForBill={openReviewForBill}
+              onPrimaryAction={() =>
+                setActiveTab(userRole === 'provider' ? 'provider-dashboard' : 'discover')
+              }
+            />
+          )}
+
+          {activeTab === 'messages' && (
+            <MessagesInbox
+              user={user}
+              mode={userRole}
+              chats={userRole === 'provider' ? sortedProviderChats : sortedSeekerChats}
+              onSelectChat={(chat) =>
+                setActiveChat({
+                  chatId: chat.id,
+                  seekerId: chat.seekerId,
+                  seekerName: chat.seekerName,
+                  providerId: chat.providerId,
+                  shopName: chat.shopName,
+                })
+              }
+              onPrimaryAction={() =>
+                setActiveTab(userRole === 'provider' ? 'provider-dashboard' : 'discover')
+              }
+            />
+          )}
+
+          {activeTab === 'appointments' && (
+            <AppointmentsView
+              user={user}
+              mode={userRole}
+              appointments={
+                userRole === 'provider'
+                  ? sortedProviderAppointments
+                  : sortedSeekerAppointments
+              }
+              reviewedRatingsByApptId={reviewedRatingsBySourceId}
+              onOpenReview={openReviewForAppointment}
+              onOpenChatByThread={(appt) =>
+                setActiveChat({
+                  chatId: appt.chatId,
+                  seekerId: appt.seekerId,
+                  seekerName: appt.seekerName,
+                  providerId: appt.providerId,
+                  shopName: appt.shopName,
+                })
+              }
+              onPrimaryAction={() =>
+                setActiveTab(userRole === 'provider' ? 'provider-dashboard' : 'discover')
+              }
             />
           )}
         </div>
@@ -618,23 +993,56 @@ function AppContent() {
           shopName={activeChat.shopName}
           serviceListing={activeChatService}
           appointments={mergedAppointments}
-          reviewedRatingsByApptId={reviewedRatingsByApptId}
-          onOpenReview={(appt) => setReviewTargetAppt(appt)}
+          reviewedRatingsByApptId={reviewedRatingsBySourceId}
+          onOpenReview={openReviewForAppointment}
           onClose={() => setActiveChat(null)}
         />
       )}
 
-      {/* Post-Appointment Star Rating & Review Modal */}
-      {user && reviewTargetAppt && (
+      {/* Bill Checkout Modal (In-App or Counter Payment) */}
+      {user && checkoutContext && (
+        <BillCheckoutModal
+          user={user}
+          service={checkoutContext.service}
+          items={checkoutContext.items}
+          onClose={() => setCheckoutContext(null)}
+          onBillCreated={(createdBill) => {
+            setCheckoutContext(null);
+            setActiveReceiptFallback(createdBill);
+            setActiveReceiptBillId(createdBill.id);
+          }}
+        />
+      )}
+
+      {/* Digital Payment Bill & Receipt Modal */}
+      {user && activeReceiptBill && (
+        <BillReceiptModal
+          bill={activeReceiptBill}
+          viewerRole={userRole}
+          isReviewed={reviewedRatingsBySourceId[activeReceiptBill.id] !== undefined}
+          onClose={() => {
+            setActiveReceiptBillId(null);
+            setActiveReceiptFallback(null);
+          }}
+          onRateShop={(billToReview) => {
+            setActiveReceiptBillId(null);
+            setActiveReceiptFallback(null);
+            openReviewForBill(billToReview);
+          }}
+        />
+      )}
+
+      {/* Post-Appointment / Post-Payment Star Rating & Review Modal */}
+      {user && reviewTarget && (
         <ReviewModal
           user={user}
-          appointment={reviewTargetAppt}
-          onClose={() => setReviewTargetAppt(null)}
-          onSubmitted={(appointmentId, rating) => {
-            checkedReviewApptIdsRef.current.add(appointmentId);
-            setReviewedRatingsByApptId((prev) => ({
+          source={reviewTarget}
+          onClose={() => setReviewTarget(null)}
+          onSubmitted={(sourceId, rating) => {
+            checkedReviewSourceIdsRef.current.add(sourceId);
+            setReviewedRatingsBySourceId((prev) => ({
               ...prev,
-              [appointmentId]: rating,
+              [sourceId]: rating,
             }));
           }}
         />

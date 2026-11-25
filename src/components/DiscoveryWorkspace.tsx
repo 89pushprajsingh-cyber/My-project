@@ -1,17 +1,33 @@
-import React, { useMemo, useState } from 'react';
-import { AdvancedMarker, Map, Pin } from '@vis.gl/react-google-maps';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AdvancedMarker, Map, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import {
   Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   Crosshair,
   ExternalLink,
+  Globe,
+  Images,
+  LocateFixed,
   MapPin,
+  Maximize2,
   MessageSquare,
+  Minus,
+  Phone,
+  Plus,
+  Receipt,
+  RefreshCw,
   ShieldCheck,
+  Star,
+  Store,
   X,
 } from 'lucide-react';
 import {
+  BillLineItem,
   formatDistanceKm,
   getAverageRating,
+  getServiceCatalogItems,
   haversineDistanceKm,
   LatLngPoint,
   SERVICE_CATEGORIES,
@@ -23,14 +39,48 @@ import { MapCameraSync, MapRadiusCircle } from './MapRadiusCircle';
 import { SafeImage } from './SafeImage';
 import { StarRatingDisplay } from './StarRating';
 import { ProviderReviewsList } from './ProviderReviewsList';
+import {
+  discoverGooglePlaces,
+  fetchGooglePlaceDetails,
+  formatBusinessStatusLabel,
+  formatPriceLevelLabel,
+  GoogleMapPlaceItem,
+  isQuotaExhaustedError,
+} from './googlePlacesDiscovery';
 
 interface DiscoveryWorkspaceProps {
   services: ServiceListing[];
   isLoadingServices: boolean;
   mapsReady: boolean;
   onOpenChat: (service: ServiceListing) => void;
-  onGoToProviderPortal: () => void;
+  onStartCheckout: (service: ServiceListing, items: BillLineItem[]) => void;
 }
+
+type SourceFilter = 'all' | 'google' | 'registered';
+
+type SelectedSelection =
+  | { source: 'registered'; id: string }
+  | { source: 'google'; id: string };
+
+type DiscoveryEntry =
+  | {
+      source: 'registered';
+      key: string;
+      service: ServiceListing;
+      distanceKm: number | null;
+      sortDistanceKm: number;
+      ratingValue: number | null;
+      ratingCount: number;
+    }
+  | {
+      source: 'google';
+      key: string;
+      place: GoogleMapPlaceItem;
+      distanceKm: number | null;
+      sortDistanceKm: number;
+      ratingValue: number | null;
+      ratingCount: number;
+    };
 
 const RADIUS_OPTIONS: { label: string; value: number | null }[] = [
   { label: 'Any distance', value: null },
@@ -42,24 +92,185 @@ const RADIUS_OPTIONS: { label: string; value: number | null }[] = [
 
 const DEFAULT_MAP_CENTER: LatLngPoint = { lat: 28.6139, lng: 77.209 };
 
+function matchesSearchQuery(svc: ServiceListing, rawQuery: string): boolean {
+  const cleaned = rawQuery.trim().toLowerCase();
+  if (!cleaned) return true;
+
+  const catalog = getServiceCatalogItems(svc);
+  const catalogText = catalog.map((c) => `${c.name} ${c.itemType} ${c.unit}`).join(' ');
+  const haystack = `${svc.shopName} ${svc.category} ${svc.ownerName} ${svc.description} ${svc.address} ${svc.servicesOffered.join(' ')} ${catalogText}`.toLowerCase();
+
+  const normalizedHaystack = haystack.replace(/caf[eé]/g, 'cafe');
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+
+  return tokens.every((token) => {
+    const normalizedToken = token.replace(/caffe/g, 'cafe').replace(/café/g, 'cafe');
+    return haystack.includes(token) || normalizedHaystack.includes(normalizedToken);
+  });
+}
+
+function normalizeNameForDedup(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+interface GooglePlacesSyncProps {
+  center: LatLngPoint;
+  category: 'All' | ServiceCategory;
+  searchText: string;
+  radiusKm: number | null;
+  enabled: boolean;
+  refreshSeq: number;
+  onLoadingChange: (loading: boolean) => void;
+  onErrorChange: (error: string | null) => void;
+  onResults: (places: GoogleMapPlaceItem[], queriedCenter: LatLngPoint) => void;
+}
+
+function GooglePlacesSync({
+  center,
+  category,
+  searchText,
+  radiusKm,
+  enabled,
+  refreshSeq,
+  onLoadingChange,
+  onErrorChange,
+  onResults,
+}: GooglePlacesSyncProps) {
+  const placesLib = useMapsLibrary('places');
+  const lastQueryKeyRef = useRef<string>('');
+  const requestSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!placesLib || !enabled) return;
+
+    const queryKey = `${center.lat.toFixed(4)}|${center.lng.toFixed(4)}|${category}|${searchText.trim().toLowerCase()}|${radiusKm ?? 'any'}|${refreshSeq}`;
+    if (queryKey === lastQueryKeyRef.current) return;
+
+    const timer = window.setTimeout(async () => {
+      const seq = ++requestSeqRef.current;
+      onLoadingChange(true);
+      onErrorChange(null);
+
+      try {
+        const items = await discoverGooglePlaces({
+          placesLib,
+          center,
+          category,
+          searchText,
+          radiusKm,
+        });
+        if (seq !== requestSeqRef.current) return;
+        lastQueryKeyRef.current = queryKey;
+        onResults(items, center);
+      } catch (err) {
+        if (seq !== requestSeqRef.current) return;
+        if (isQuotaExhaustedError(err)) {
+          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+          onErrorChange('Google Maps Places quota reached. Please try again later.');
+        } else {
+          onErrorChange('Unable to load Google Maps listings for this area.');
+        }
+      } finally {
+        if (seq === requestSeqRef.current) {
+          onLoadingChange(false);
+        }
+      }
+    }, 420);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    placesLib,
+    center.lat,
+    center.lng,
+    category,
+    searchText,
+    radiusKm,
+    enabled,
+    refreshSeq,
+    onLoadingChange,
+    onErrorChange,
+    onResults,
+  ]);
+
+  return null;
+}
+
+interface MapViewportTrackerProps {
+  lastSearchedCenter: LatLngPoint | null;
+  onPannedCenterChange: (center: LatLngPoint | null) => void;
+}
+
+function MapViewportTracker({
+  lastSearchedCenter,
+  onPannedCenterChange,
+}: MapViewportTrackerProps) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+    const listener = map.addListener('idle', () => {
+      const c = map.getCenter();
+      if (!c) return;
+      const currentPt = { lat: c.lat(), lng: c.lng() };
+      if (!lastSearchedCenter) {
+        onPannedCenterChange(null);
+        return;
+      }
+      const movedKm = haversineDistanceKm(lastSearchedCenter, currentPt);
+      if (movedKm > 0.75) {
+        onPannedCenterChange(currentPt);
+      } else {
+        onPannedCenterChange(null);
+      }
+    });
+
+    return () => {
+      listener.remove();
+    };
+  }, [map, lastSearchedCenter, onPannedCenterChange]);
+
+  return null;
+}
+
 export function DiscoveryWorkspace({
   services,
   isLoadingServices,
   mapsReady,
   onOpenChat,
-  onGoToProviderPortal,
+  onStartCheckout,
 }: DiscoveryWorkspaceProps) {
-  const [selectedCategory, setSelectedCategory] = useState<'All' | ServiceCategory>('Barber & Salon');
+  const [selectedCategory, setSelectedCategory] = useState<'All' | ServiceCategory>('All');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [searchText, setSearchText] = useState('');
   const [searchCenter, setSearchCenter] = useState<LatLngPoint | null>(null);
   const [searchAddressLabel, setSearchAddressLabel] = useState('');
   const [radiusKm, setRadiusKm] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<'nearest' | 'rating'>('nearest');
-  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<'overview' | 'reviews'>('overview');
+
+  const [selection, setSelection] = useState<SelectedSelection | null>(null);
+  const [detailTab, setDetailTab] = useState<'catalog' | 'photos' | 'reviews'>('catalog');
+  const [activePhotoIdx, setActivePhotoIdx] = useState(0);
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+
+  const [quantitiesByService, setQuantitiesByService] = useState<
+    Record<string, Record<number, number>>
+  >({});
   const [cameraTrigger, setCameraTrigger] = useState(0);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
+
+  // Live Google Maps Places results
+  const [googlePlaces, setGooglePlaces] = useState<GoogleMapPlaceItem[]>([]);
+  const [googleDetailsById, setGoogleDetailsById] = useState<Record<string, GoogleMapPlaceItem>>(
+    {}
+  );
+  const [isLoadingGooglePlaces, setIsLoadingGooglePlaces] = useState(false);
+  const [googlePlacesError, setGooglePlacesError] = useState<string | null>(null);
+  const [isLoadingPlaceDetail, setIsLoadingPlaceDetail] = useState(false);
+  const [googleRefreshSeq, setGoogleRefreshSeq] = useState(0);
+  const [lastQueriedCenter, setLastQueriedCenter] = useState<LatLngPoint | null>(null);
+  const [pannedCenter, setPannedCenter] = useState<LatLngPoint | null>(null);
+  const fetchingDetailIdRef = useRef<string | null>(null);
 
   const effectiveCenter = useMemo<LatLngPoint>(() => {
     if (searchCenter) return searchCenter;
@@ -69,58 +280,317 @@ export function DiscoveryWorkspace({
     return DEFAULT_MAP_CENTER;
   }, [searchCenter, services]);
 
-  const filteredServices = useMemo(() => {
-    const queryLower = searchText.trim().toLowerCase();
-
-    const mapped = services
-      .filter((svc) => svc.isActive)
-      .filter((svc) => {
-        if (selectedCategory !== 'All' && svc.category !== selectedCategory) {
-          return false;
-        }
-        if (queryLower) {
-          const haystack = `${svc.shopName} ${svc.description} ${svc.address} ${svc.servicesOffered.join(' ')}`.toLowerCase();
-          if (!haystack.includes(queryLower)) return false;
-        }
-        return true;
-      })
-      .map((svc) => {
-        const distanceKm = searchCenter
-          ? haversineDistanceKm(searchCenter, { lat: svc.lat, lng: svc.lng })
-          : null;
-        return { service: svc, distanceKm };
-      })
-      .filter((item) => {
-        if (radiusKm !== null && item.distanceKm !== null) {
-          return item.distanceKm <= radiusKm;
-        }
-        return true;
-      });
-
-    if (sortBy === 'rating') {
-      mapped.sort((a, b) => {
-        const avgA = getAverageRating(a.service) ?? -1;
-        const avgB = getAverageRating(b.service) ?? -1;
-        if (avgB !== avgA) return avgB - avgA;
-        const countDiff = (b.service.ratingCount ?? 0) - (a.service.ratingCount ?? 0);
-        if (countDiff !== 0) return countDiff;
-        return (a.distanceKm ?? 0) - (b.distanceKm ?? 0);
-      });
-    } else if (searchCenter) {
-      mapped.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
-    }
-
-    return mapped;
-  }, [services, selectedCategory, searchText, searchCenter, radiusKm, sortBy]);
-
-  const selectedService = useMemo(
-    () => filteredServices.find((item) => item.service.id === selectedServiceId)?.service || null,
-    [filteredServices, selectedServiceId]
+  const handleGoogleResults = useCallback(
+    (items: GoogleMapPlaceItem[], queriedCenter: LatLngPoint) => {
+      setGooglePlaces(items);
+      setLastQueriedCenter(queriedCenter);
+      setPannedCenter(null);
+    },
+    []
   );
 
-  const handleSelectService = (serviceId: string | null) => {
-    setSelectedServiceId(serviceId);
-    setDetailTab('overview');
+  // Merge Google Maps items with any fetched detailed fields for this session
+  const hydratedGooglePlaces = useMemo(
+    () => googlePlaces.map((item) => googleDetailsById[item.id] ?? item),
+    [googlePlaces, googleDetailsById]
+  );
+
+  // Blend & filter registered NearCraft shops + live Google Maps services
+  const discoveredEntries = useMemo<DiscoveryEntry[]>(() => {
+    const activeRegistered = services.filter((svc) => svc.isActive);
+
+    const registeredEntries: DiscoveryEntry[] =
+      sourceFilter === 'google'
+        ? []
+        : activeRegistered
+            .filter((svc) => {
+              if (selectedCategory !== 'All' && svc.category !== selectedCategory) {
+                return false;
+              }
+              return matchesSearchQuery(svc, searchText);
+            })
+            .map((svc) => {
+              const distanceKm = searchCenter
+                ? haversineDistanceKm(searchCenter, { lat: svc.lat, lng: svc.lng })
+                : null;
+              const sortDistanceKm = haversineDistanceKm(effectiveCenter, {
+                lat: svc.lat,
+                lng: svc.lng,
+              });
+              return {
+                source: 'registered' as const,
+                key: `registered:${svc.id}`,
+                service: svc,
+                distanceKm,
+                sortDistanceKm,
+                ratingValue: getAverageRating(svc),
+                ratingCount: svc.ratingCount ?? 0,
+              };
+            })
+            .filter((entry) => {
+              if (radiusKm !== null && entry.distanceKm !== null) {
+                return entry.distanceKm <= radiusKm;
+              }
+              return true;
+            });
+
+    const googleEntries: DiscoveryEntry[] =
+      sourceFilter === 'registered'
+        ? []
+        : hydratedGooglePlaces
+            .filter((place) => {
+              // Avoid duplicating a shop that is already Aadhaar-registered on NearCraft
+              const placeNameNorm = normalizeNameForDedup(place.displayName);
+              const isDup = activeRegistered.some((reg) => {
+                const sameSpot =
+                  haversineDistanceKm({ lat: reg.lat, lng: reg.lng }, { lat: place.lat, lng: place.lng }) <
+                  0.08;
+                if (!sameSpot) return false;
+                const regNorm = normalizeNameForDedup(reg.shopName);
+                return (
+                  regNorm === placeNameNorm ||
+                  regNorm.includes(placeNameNorm) ||
+                  placeNameNorm.includes(regNorm)
+                );
+              });
+              return !isDup;
+            })
+            .map((place) => {
+              const distanceKm = searchCenter
+                ? haversineDistanceKm(searchCenter, { lat: place.lat, lng: place.lng })
+                : null;
+              const sortDistanceKm = haversineDistanceKm(effectiveCenter, {
+                lat: place.lat,
+                lng: place.lng,
+              });
+              return {
+                source: 'google' as const,
+                key: `google:${place.id}`,
+                place,
+                distanceKm,
+                sortDistanceKm,
+                ratingValue: place.rating,
+                ratingCount: place.userRatingCount,
+              };
+            })
+            .filter((entry) => {
+              if (radiusKm !== null && searchCenter && entry.distanceKm !== null) {
+                return entry.distanceKm <= radiusKm;
+              }
+              return true;
+            });
+
+    const combined = [...registeredEntries, ...googleEntries];
+
+    if (sortBy === 'rating') {
+      combined.sort((a, b) => {
+        const ratingA = a.ratingValue ?? -1;
+        const ratingB = b.ratingValue ?? -1;
+        if (ratingB !== ratingA) return ratingB - ratingA;
+        if (b.ratingCount !== a.ratingCount) return b.ratingCount - a.ratingCount;
+        return a.sortDistanceKm - b.sortDistanceKm;
+      });
+    } else if (searchCenter) {
+      combined.sort((a, b) => a.sortDistanceKm - b.sortDistanceKm);
+    } else {
+      combined.sort((a, b) => {
+        if (a.source !== b.source) {
+          return a.source === 'registered' ? -1 : 1;
+        }
+        return a.sortDistanceKm - b.sortDistanceKm;
+      });
+    }
+
+    return combined;
+  }, [
+    services,
+    hydratedGooglePlaces,
+    sourceFilter,
+    selectedCategory,
+    searchText,
+    searchCenter,
+    effectiveCenter,
+    radiusKm,
+    sortBy,
+  ]);
+
+  const selectedEntry = useMemo(() => {
+    if (!selection) return null;
+    const found = discoveredEntries.find(
+      (entry) =>
+        entry.source === selection.source &&
+        (entry.source === 'registered'
+          ? entry.service.id === selection.id
+          : entry.place.id === selection.id)
+    );
+    if (found) return found;
+
+    // Preserve opened Google place detail even if filter changed slightly until closed
+    if (selection.source === 'google') {
+      const cached = googleDetailsById[selection.id] || googlePlaces.find((p) => p.id === selection.id);
+      if (cached) {
+        const distanceKm = searchCenter
+          ? haversineDistanceKm(searchCenter, { lat: cached.lat, lng: cached.lng })
+          : null;
+        return {
+          source: 'google' as const,
+          key: `google:${cached.id}`,
+          place: cached,
+          distanceKm,
+          sortDistanceKm: haversineDistanceKm(effectiveCenter, {
+            lat: cached.lat,
+            lng: cached.lng,
+          }),
+          ratingValue: cached.rating,
+          ratingCount: cached.userRatingCount,
+        } satisfies DiscoveryEntry;
+      }
+    }
+    return null;
+  }, [selection, discoveredEntries, googleDetailsById, googlePlaces, searchCenter, effectiveCenter]);
+
+  const selectedRegisteredService =
+    selectedEntry?.source === 'registered' ? selectedEntry.service : null;
+  const selectedGooglePlace =
+    selectedEntry?.source === 'google' ? selectedEntry.place : null;
+  const selectedDistanceKm = selectedEntry?.distanceKm ?? null;
+
+  // Fetch rich details (hours, phone, website, photos, reviews) lazily on Google place selection
+  useEffect(() => {
+    if (!selectedGooglePlace || selectedGooglePlace.detailsLoaded) return;
+    if (fetchingDetailIdRef.current === selectedGooglePlace.id) return;
+
+    let cancelled = false;
+    fetchingDetailIdRef.current = selectedGooglePlace.id;
+    setIsLoadingPlaceDetail(true);
+
+    void fetchGooglePlaceDetails(selectedGooglePlace)
+      .then((detailed) => {
+        if (cancelled) return;
+        setGoogleDetailsById((prev) => ({
+          ...prev,
+          [detailed.id]: detailed,
+        }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (isQuotaExhaustedError(err)) {
+          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingPlaceDetail(false);
+        }
+        if (fetchingDetailIdRef.current === selectedGooglePlace.id) {
+          fetchingDetailIdRef.current = null;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGooglePlace]);
+
+  const selectedCatalog = useMemo(
+    () => (selectedRegisteredService ? getServiceCatalogItems(selectedRegisteredService) : []),
+    [selectedRegisteredService]
+  );
+
+  const selectedQuantities = useMemo(
+    () =>
+      selectedRegisteredService ? quantitiesByService[selectedRegisteredService.id] || {} : {},
+    [quantitiesByService, selectedRegisteredService]
+  );
+
+  const selectedBillItems = useMemo<BillLineItem[]>(() => {
+    if (!selectedRegisteredService) return [];
+    const lines: BillLineItem[] = [];
+    selectedCatalog.forEach((item, idx) => {
+      const qty = selectedQuantities[idx] || 0;
+      if (qty > 0) {
+        lines.push({
+          name: item.name,
+          itemType: item.itemType,
+          unit: item.unit,
+          quantity: qty,
+          unitPrice: item.price,
+          lineTotal: Number((qty * item.price).toFixed(2)),
+        });
+      }
+    });
+    return lines;
+  }, [selectedRegisteredService, selectedCatalog, selectedQuantities]);
+
+  const selectedOrderTotals = useMemo(() => {
+    let count = 0;
+    let amount = 0;
+    for (const line of selectedBillItems) {
+      count += line.quantity;
+      amount += line.lineTotal;
+    }
+    return { count, amount: Number(amount.toFixed(2)) };
+  }, [selectedBillItems]);
+
+  const selectedGalleryPhotos = useMemo(() => {
+    if (selectedRegisteredService) {
+      return (selectedRegisteredService.photoUrls || []).map((url) => ({
+        url,
+        attributionText: null as string | null,
+        attributionUri: null as string | null,
+      }));
+    }
+    if (selectedGooglePlace) {
+      return selectedGooglePlace.photos.map((photo) => ({
+        url: photo.url,
+        attributionText: photo.attributions[0]?.displayName ?? null,
+        attributionUri: photo.attributions[0]?.uri ?? null,
+      }));
+    }
+    return [];
+  }, [selectedRegisteredService, selectedGooglePlace]);
+
+  const safePhotoIdx =
+    selectedGalleryPhotos.length > 0
+      ? Math.min(activePhotoIdx, selectedGalleryPhotos.length - 1)
+      : 0;
+
+  useEffect(() => {
+    if (!isLightboxOpen || !selectedEntry) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setIsLightboxOpen(false);
+      } else if (ev.key === 'ArrowLeft' && selectedGalleryPhotos.length > 1) {
+        setActivePhotoIdx(
+          (prev) => (prev - 1 + selectedGalleryPhotos.length) % selectedGalleryPhotos.length
+        );
+      } else if (ev.key === 'ArrowRight' && selectedGalleryPhotos.length > 1) {
+        setActivePhotoIdx((prev) => (prev + 1) % selectedGalleryPhotos.length);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isLightboxOpen, selectedEntry, selectedGalleryPhotos.length]);
+
+  const handleSelectEntry = (next: SelectedSelection | null) => {
+    setSelection(next);
+    setDetailTab('catalog');
+    setActivePhotoIdx(0);
+    setIsLightboxOpen(false);
+  };
+
+  const handleAdjustItemQty = (serviceId: string, itemIdx: number, delta: number) => {
+    setQuantitiesByService((prev) => {
+      const currentMap = prev[serviceId] || {};
+      const nextQty = Math.min(99, Math.max(0, (currentMap[itemIdx] || 0) + delta));
+      return {
+        ...prev,
+        [serviceId]: {
+          ...currentMap,
+          [itemIdx]: nextQty,
+        },
+      };
+    });
   };
 
   const handleUseMyGps = () => {
@@ -149,7 +619,6 @@ export function DiscoveryWorkspace({
   const handleSelectRadius = (value: number | null) => {
     setRadiusKm(value);
     if (value !== null && !searchCenter) {
-      // Anchor radius around current effective center so user sees radius filtering immediately
       setSearchCenter(effectiveCenter);
       if (!searchAddressLabel) {
         setSearchAddressLabel('Map Center');
@@ -157,18 +626,54 @@ export function DiscoveryWorkspace({
     }
   };
 
+  const handleSearchPannedArea = () => {
+    if (!pannedCenter) return;
+    setSearchCenter(pannedCenter);
+    setSearchAddressLabel('Selected Map Area');
+    setPannedCenter(null);
+    setGoogleRefreshSeq((prev) => prev + 1);
+  };
+
+  const selectedShopName =
+    selectedRegisteredService?.shopName || selectedGooglePlace?.displayName || '';
+  const selectedShopCategory =
+    selectedRegisteredService?.category || selectedGooglePlace?.primaryTypeLabel || 'Service';
+  const selectedCoords = selectedRegisteredService
+    ? { lat: selectedRegisteredService.lat, lng: selectedRegisteredService.lng }
+    : selectedGooglePlace
+      ? { lat: selectedGooglePlace.lat, lng: selectedGooglePlace.lng }
+      : null;
+
+  const isLoadingCombined =
+    isLoadingServices || (mapsReady && isLoadingGooglePlaces && discoveredEntries.length === 0);
+
   return (
     <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-65px)] overflow-hidden">
-      {/* Left Sidebar: Filters & Matching Providers */}
+      {/* Live Google Maps Places API (New) fetcher mounted only when APIProvider is ready */}
+      {mapsReady && (
+        <GooglePlacesSync
+          center={effectiveCenter}
+          category={selectedCategory}
+          searchText={searchText}
+          radiusKm={radiusKm}
+          enabled={sourceFilter !== 'registered'}
+          refreshSeq={googleRefreshSeq}
+          onLoadingChange={setIsLoadingGooglePlaces}
+          onErrorChange={setGooglePlacesError}
+          onResults={handleGoogleResults}
+        />
+      )}
+
+      {/* Left Sidebar: Filters & Matching Providers + Live Google Maps Places */}
       <aside className="w-full lg:w-[440px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col lg:h-full">
-        <div className="p-5 border-b border-slate-200 space-y-4">
+        <div className="p-5 border-b border-slate-200 space-y-3.5">
           <div className="flex items-center justify-between gap-2">
             <h1 className="text-lg font-bold text-slate-900 tracking-tight">
-              Find Verified Local Services
+              Find Local Services
             </h1>
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-xs font-mono tabular-nums text-slate-500">
-                {filteredServices.length} found
+                {discoveredEntries.length} found
               </span>
               <span className="text-slate-300" aria-hidden="true">·</span>
               <select
@@ -183,7 +688,7 @@ export function DiscoveryWorkspace({
             </div>
           </div>
 
-          {/* Service Type Selector */}
+          {/* Service Type Selector & Keyword Search */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
               <label htmlFor="discover-category" className="block text-xs font-medium text-slate-600 mb-1">
@@ -206,14 +711,14 @@ export function DiscoveryWorkspace({
 
             <div>
               <label htmlFor="discover-search" className="block text-xs font-medium text-slate-600 mb-1">
-                Filter by Name or Service
+                Search Shop, Dish, or Service
               </label>
               <input
                 id="discover-search"
                 type="text"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
-                placeholder="e.g., haircut, fade, beard"
+                placeholder="e.g., soup, cafe, salon, goggles"
                 className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
               />
             </div>
@@ -223,16 +728,16 @@ export function DiscoveryWorkspace({
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs font-medium text-slate-600">
-                Your Area / Reference Point
+                Your Live Location / Area
               </label>
               <button
                 type="button"
                 onClick={handleUseMyGps}
                 disabled={isLocating}
-                className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-800"
+                className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-800 whitespace-nowrap"
               >
                 <Crosshair className="w-3.5 h-3.5" />
-                <span>{isLocating ? 'Locating...' : 'Use My GPS'}</span>
+                <span>{isLocating ? 'Locating...' : 'Share Live GPS'}</span>
               </button>
             </div>
 
@@ -257,47 +762,88 @@ export function DiscoveryWorkspace({
             {gpsError && <p className="mt-1 text-xs text-red-600">{gpsError}</p>}
           </div>
 
-          {/* Optional Radius Filter */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-slate-600">
-                Search Radius (optional)
-              </span>
-              {searchCenter && radiusKm !== null && (
-                <button
-                  type="button"
-                  onClick={() => setRadiusKm(null)}
-                  className="text-xs text-blue-700 hover:underline"
-                >
-                  Clear radius
-                </button>
-              )}
+          {/* Optional Radius Filter + Source Filter */}
+          <div className="space-y-2.5">
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-slate-600">
+                  Search Radius (optional)
+                </span>
+                {searchCenter && radiusKm !== null && (
+                  <button
+                    type="button"
+                    onClick={() => setRadiusKm(null)}
+                    className="text-xs text-blue-700 hover:underline"
+                  >
+                    Clear radius
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-5 gap-1 p-1 bg-slate-100 rounded-lg">
+                {RADIUS_OPTIONS.map((opt) => {
+                  const active = radiusKm === opt.value;
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => handleSelectRadius(opt.value)}
+                      className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate ${
+                        active
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {opt.label === 'Any distance' ? 'Any' : opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="grid grid-cols-5 gap-1 p-1 bg-slate-100 rounded-lg">
-              {RADIUS_OPTIONS.map((opt) => {
-                const active = radiusKm === opt.value;
+
+            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
+              {(
+                [
+                  { id: 'all', label: 'All Services' },
+                  { id: 'google', label: 'Google Maps' },
+                  { id: 'registered', label: 'Partners' },
+                ] as { id: SourceFilter; label: string }[]
+              ).map((tab) => {
+                const active = sourceFilter === tab.id;
                 return (
                   <button
-                    key={opt.label}
+                    key={tab.id}
                     type="button"
-                    onClick={() => handleSelectRadius(opt.value)}
+                    onClick={() => setSourceFilter(tab.id)}
                     className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap truncate ${
                       active
                         ? 'bg-white text-slate-900 shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {opt.label === 'Any distance' ? 'Any' : opt.label}
+                    {tab.label}
                   </button>
                 );
               })}
             </div>
           </div>
+
+          {googlePlacesError && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              {googlePlacesError}
+            </p>
+          )}
         </div>
 
-        {/* Provider Results List */}
+        {/* Provider & Google Maps Results List */}
         <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-          {isLoadingServices ? (
+          {isLoadingGooglePlaces && discoveredEntries.length > 0 && (
+            <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 flex items-center gap-2 text-xs text-slate-500">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+              <span>Updating nearby Google Maps services...</span>
+            </div>
+          )}
+
+          {isLoadingCombined ? (
             <div className="p-5 space-y-4">
               {[1, 2, 3].map((i) => (
                 <div key={i} className="animate-pulse flex gap-3.5">
@@ -310,23 +856,32 @@ export function DiscoveryWorkspace({
                 </div>
               ))}
             </div>
-          ) : filteredServices.length === 0 ? (
+          ) : discoveredEntries.length === 0 ? (
             <div className="p-8 text-center">
               <MapPin className="w-8 h-8 text-slate-300 mx-auto mb-3" />
               <h3 className="text-sm font-semibold text-slate-900">
-                No matching providers found
+                No matching services found
               </h3>
               <p className="mt-1.5 text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">
-                {services.length === 0
-                  ? 'No service providers have registered yet. Register your own shop in the Provider Portal to appear on the map.'
-                  : 'Try widening your optional radius, clearing search text, or switching to All Services.'}
+                {sourceFilter === 'registered' && services.length === 0
+                  ? 'No registered NearCraft partner shops are listed yet. Switch to All Services to browse live businesses on Google Maps.'
+                  : 'Try widening your radius, searching a different service keyword, or viewing All Services.'}
               </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
+                {sourceFilter !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setSourceFilter('all')}
+                    className="px-3.5 py-2 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg whitespace-nowrap"
+                  >
+                    Show All Services
+                  </button>
+                )}
                 {radiusKm !== null && (
                   <button
                     type="button"
                     onClick={() => setRadiusKm(null)}
-                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
+                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
                   >
                     Show Any Distance
                   </button>
@@ -335,28 +890,127 @@ export function DiscoveryWorkspace({
                   <button
                     type="button"
                     onClick={() => setSelectedCategory('All')}
-                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
+                    className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
                   >
                     All Categories
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={onGoToProviderPortal}
-                  className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg"
-                >
-                  Register a Shop
-                </button>
+                {searchText.trim() !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchText('')}
+                    className="px-3.5 py-2 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg whitespace-nowrap"
+                  >
+                    Clear Search
+                  </button>
+                )}
               </div>
             </div>
           ) : (
-            filteredServices.map(({ service, distanceKm }) => {
-              const isSelected = service.id === selectedServiceId;
+            discoveredEntries.map((entry) => {
+              if (entry.source === 'registered') {
+                const { service, distanceKm } = entry;
+                const isSelected =
+                  selection?.source === 'registered' && selection.id === service.id;
+                const catalog = getServiceCatalogItems(service);
+                const avgRating = getAverageRating(service);
+                const minPrice = catalog.length
+                  ? Math.min(...catalog.map((c) => c.price))
+                  : null;
+
+                return (
+                  <div
+                    key={entry.key}
+                    onClick={() => {
+                      handleSelectEntry({ source: 'registered', id: service.id });
+                      setCameraTrigger((prev) => prev + 1);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleSelectEntry({ source: 'registered', id: service.id });
+                      }
+                    }}
+                    className={`p-4 cursor-pointer transition-colors ${
+                      isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex gap-3.5">
+                      <div className="w-24 h-20 rounded-lg overflow-hidden border border-slate-200 shrink-0 bg-slate-100">
+                        <SafeImage
+                          src={service.photoUrls[0]}
+                          alt={service.shopName}
+                          fallbackLabel={service.category}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <h3 className="text-sm font-semibold text-slate-900 truncate">
+                            {service.shopName}
+                          </h3>
+                          {distanceKm !== null && (
+                            <span className="text-xs font-mono tabular-nums font-semibold text-blue-700 shrink-0">
+                              {formatDistanceKm(distanceKm)}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                          <StarRatingDisplay
+                            average={avgRating}
+                            count={service.ratingCount ?? 0}
+                            compact
+                          />
+                          <span aria-hidden="true">·</span>
+                          <span>{service.category}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Verified Partner</span>
+                          </span>
+                        </div>
+
+                        <p className="mt-1 text-xs text-slate-600 truncate">
+                          {service.address}
+                        </p>
+
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-500 truncate tabular-nums">
+                            {catalog.length} {catalog.length === 1 ? 'item' : 'items'}
+                            {minPrice !== null ? ` · From ₹${minPrice}` : ''}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenChat(service);
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors whitespace-nowrap"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                              <span>Chat</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              const { place, distanceKm } = entry;
+              const isSelected = selection?.source === 'google' && selection.id === place.id;
+              const priceText = formatPriceLevelLabel(place.priceLevel);
+
               return (
                 <div
-                  key={service.id}
+                  key={entry.key}
                   onClick={() => {
-                    handleSelectService(service.id);
+                    handleSelectEntry({ source: 'google', id: place.id });
                     setCameraTrigger((prev) => prev + 1);
                   }}
                   role="button"
@@ -364,7 +1018,7 @@ export function DiscoveryWorkspace({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      handleSelectService(service.id);
+                      handleSelectEntry({ source: 'google', id: place.id });
                     }
                   }}
                   className={`p-4 cursor-pointer transition-colors ${
@@ -374,58 +1028,54 @@ export function DiscoveryWorkspace({
                   <div className="flex gap-3.5">
                     <div className="w-24 h-20 rounded-lg overflow-hidden border border-slate-200 shrink-0 bg-slate-100">
                       <SafeImage
-                        src={service.photoUrls[0]}
-                        alt={service.shopName}
-                        fallbackLabel={service.category}
+                        src={place.photos[0]?.url || ''}
+                        alt={place.displayName}
+                        fallbackLabel={place.primaryTypeLabel}
                         className="w-full h-full object-cover"
                       />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-2">
                         <h3 className="text-sm font-semibold text-slate-900 truncate">
-                          {service.shopName}
+                          {place.displayName}
                         </h3>
                         {distanceKm !== null && (
-                          <span className="text-xs font-mono tabular-nums font-medium text-blue-700 shrink-0">
+                          <span className="text-xs font-mono tabular-nums font-semibold text-blue-700 shrink-0">
                             {formatDistanceKm(distanceKm)}
                           </span>
                         )}
                       </div>
 
                       <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
-                        <span>{service.category}</span>
-                        <span aria-hidden="true">·</span>
                         <StarRatingDisplay
-                          average={getAverageRating(service)}
-                          count={service.ratingCount ?? 0}
+                          average={place.rating}
+                          count={place.userRatingCount}
                           compact
                         />
                         <span aria-hidden="true">·</span>
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          <span>Aadhaar Verified</span>
-                        </span>
+                        <span>{place.primaryTypeLabel}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-slate-600 font-medium">Google Maps</span>
                       </div>
 
                       <p className="mt-1 text-xs text-slate-600 truncate">
-                        {service.address}
+                        {place.shortAddress}
                       </p>
 
-                      <div className="mt-2.5 flex items-center justify-between gap-2">
+                      <div className="mt-2 flex items-center justify-between gap-2">
                         <span className="text-[11px] text-slate-500 truncate">
-                          {service.servicesOffered[0]}
+                          {priceText || formatBusinessStatusLabel(place.businessStatus) || 'Google Place'}
                         </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenChat(service);
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors whitespace-nowrap shrink-0"
+                        <a
+                          href={`https://www.google.com/maps/dir/?api=1&destination=${place.lat},${place.lng}&destination_place_id=${encodeURIComponent(place.id)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap shrink-0"
                         >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          <span>Chat & Book</span>
-                        </button>
+                          <span>Directions</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -436,26 +1086,40 @@ export function DiscoveryWorkspace({
         </div>
       </aside>
 
-      {/* Right Pane: Full-Size Interactive Google Map + Selected Shop Card */}
-      <main className="relative flex-1 h-[500px] lg:h-full bg-slate-100">
+      {/* Right Pane: Full-Size Interactive Google Map + Selected Shop Sheet */}
+      <main className="relative flex-1 h-[540px] lg:h-full bg-slate-100">
+        {mapsReady && pannedCenter && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+            <button
+              type="button"
+              onClick={handleSearchPannedArea}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-md transition-colors whitespace-nowrap"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-blue-700" />
+              <span>Search This Map Area</span>
+            </button>
+          </div>
+        )}
+
         {mapsReady ? (
           <Map
             mapId="DEMO_MAP_ID"
             defaultCenter={effectiveCenter}
-            defaultZoom={12}
+            defaultZoom={13}
             gestureHandling="greedy"
             disableDefaultUI={false}
             internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
             style={{ width: '100%', height: '100%' }}
           >
             <MapCameraSync
-              center={
-                selectedService
-                  ? { lat: selectedService.lat, lng: selectedService.lng }
-                  : effectiveCenter
-              }
-              zoom={selectedService ? 15 : 12}
+              center={selectedCoords || effectiveCenter}
+              zoom={selectedCoords ? 15 : 13}
               triggerKey={cameraTrigger}
+            />
+
+            <MapViewportTracker
+              lastSearchedCenter={lastQueriedCenter}
+              onPannedCenterChange={setPannedCenter}
             />
 
             {searchCenter && (
@@ -468,21 +1132,46 @@ export function DiscoveryWorkspace({
               <MapRadiusCircle center={searchCenter} radiusKm={radiusKm} />
             )}
 
-            {filteredServices.map(({ service }) => {
-              const isSelected = service.id === selectedServiceId;
+            {discoveredEntries.map((entry) => {
+              if (entry.source === 'registered') {
+                const { service } = entry;
+                const isSelected =
+                  selection?.source === 'registered' && selection.id === service.id;
+                return (
+                  <AdvancedMarker
+                    key={entry.key}
+                    position={{ lat: service.lat, lng: service.lng }}
+                    title={service.shopName}
+                    zIndex={isSelected ? 1000 : 20}
+                    onClick={() =>
+                      handleSelectEntry({ source: 'registered', id: service.id })
+                    }
+                  >
+                    <Pin
+                      background={isSelected ? '#1d4ed8' : '#0f172a'}
+                      borderColor="#ffffff"
+                      glyphColor="#ffffff"
+                      scale={isSelected ? 1.2 : 1}
+                    />
+                  </AdvancedMarker>
+                );
+              }
+
+              const { place } = entry;
+              const isSelected = selection?.source === 'google' && selection.id === place.id;
               return (
                 <AdvancedMarker
-                  key={service.id}
-                  position={{ lat: service.lat, lng: service.lng }}
-                  title={service.shopName}
+                  key={entry.key}
+                  position={{ lat: place.lat, lng: place.lng }}
+                  title={place.displayName}
                   zIndex={isSelected ? 1000 : 10}
-                  onClick={() => handleSelectService(service.id)}
+                  onClick={() => handleSelectEntry({ source: 'google', id: place.id })}
                 >
                   <Pin
-                    background={isSelected ? '#1d4ed8' : '#0f172a'}
+                    background={isSelected ? '#1d4ed8' : '#047857'}
                     borderColor="#ffffff"
                     glyphColor="#ffffff"
-                    scale={isSelected ? 1.2 : 1}
+                    scale={isSelected ? 1.2 : 0.95}
                   />
                 </AdvancedMarker>
               );
@@ -502,60 +1191,192 @@ export function DiscoveryWorkspace({
           </div>
         )}
 
-        {/* Selected Provider Detail Sheet Over Map */}
-        {selectedService && (
-          <div className="absolute bottom-4 left-4 right-4 lg:left-auto lg:right-5 lg:w-[400px] bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-20">
-            <div className="relative h-36 bg-slate-100">
-              <SafeImage
-                src={selectedService.photoUrls[0]}
-                alt={selectedService.shopName}
-                className="w-full h-full object-cover"
-              />
+        {/* Selected Provider OR Google Maps Place Sheet */}
+        {selectedEntry && selectedCoords && (
+          <div className="absolute bottom-3 left-3 right-3 lg:top-4 lg:bottom-4 lg:left-auto lg:right-4 lg:w-[460px] max-h-[82vh] lg:max-h-none bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden z-20 flex flex-col">
+            {/* Photo Gallery Header */}
+            <div className="relative h-40 sm:h-44 bg-slate-100 shrink-0 group">
               <button
                 type="button"
-                onClick={() => handleSelectService(null)}
+                onClick={() => {
+                  if (selectedGalleryPhotos.length > 0) setIsLightboxOpen(true);
+                }}
+                aria-label={`Preview ${selectedShopName} photos fullscreen`}
+                className="block w-full h-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              >
+                <SafeImage
+                  src={selectedGalleryPhotos[safePhotoIdx]?.url || ''}
+                  alt={`${selectedShopName} photo ${safePhotoIdx + 1}`}
+                  fallbackLabel={selectedShopCategory}
+                  className="w-full h-full object-cover"
+                />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/65 via-black/15 to-transparent" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectEntry(null)}
                 aria-label="Close shop details"
-                className="absolute top-2.5 right-2.5 p-1.5 bg-white/95 hover:bg-white text-slate-700 rounded-lg border border-slate-200 shadow-sm"
+                className="absolute top-2.5 right-2.5 p-1.5 bg-white/95 hover:bg-white text-slate-700 rounded-lg border border-slate-200 shadow-sm z-10"
               >
                 <X className="w-4 h-4" />
               </button>
+
+              {selectedGalleryPhotos.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActivePhotoIdx(
+                        (safePhotoIdx - 1 + selectedGalleryPhotos.length) %
+                          selectedGalleryPhotos.length
+                      );
+                    }}
+                    aria-label="Previous photo"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1.5 bg-black/55 hover:bg-black/75 text-white rounded-lg transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActivePhotoIdx((safePhotoIdx + 1) % selectedGalleryPhotos.length);
+                    }}
+                    aria-label="Next photo"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 bg-black/55 hover:bg-black/75 text-white rounded-lg transition-colors"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+
+              <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-end justify-between gap-2 pointer-events-none">
+                {selectedGalleryPhotos.length > 1 ? (
+                  <div className="flex items-center gap-1.5 pointer-events-auto overflow-x-auto max-w-[260px]">
+                    {selectedGalleryPhotos.slice(0, 5).map((photo, idx) => (
+                      <button
+                        key={`${photo.url}-${idx}`}
+                        type="button"
+                        onClick={() => setActivePhotoIdx(idx)}
+                        aria-label={`View photo ${idx + 1}`}
+                        className={`w-10 h-7 rounded overflow-hidden border-2 transition-all shrink-0 ${
+                          safePhotoIdx === idx
+                            ? 'border-white shadow-md scale-105'
+                            : 'border-white/60 opacity-80 hover:opacity-100'
+                        }`}
+                      >
+                        <SafeImage
+                          src={photo.url}
+                          alt={`${selectedShopName} thumbnail ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <span />
+                )}
+
+                {selectedGalleryPhotos.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsLightboxOpen(true)}
+                    className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-white bg-black/60 hover:bg-black/80 rounded-md transition-colors whitespace-nowrap tabular-nums shrink-0"
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                    <span>
+                      {safePhotoIdx + 1} / {selectedGalleryPhotos.length} · Preview
+                    </span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="p-4 space-y-3">
-              <div>
-                <div className="flex items-start justify-between gap-2">
-                  <h2 className="text-base font-bold text-slate-900">
-                    {selectedService.shopName}
-                  </h2>
+            {/* Required Photo Author Attribution for Google Place Photos */}
+            {selectedGooglePlace && selectedGalleryPhotos[safePhotoIdx]?.attributionText && (
+              <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-500 flex items-center justify-between gap-2 shrink-0">
+                <span className="truncate">
+                  Photo credit:{' '}
+                  {selectedGalleryPhotos[safePhotoIdx].attributionUri ? (
+                    <a
+                      href={selectedGalleryPhotos[safePhotoIdx].attributionUri!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-slate-700 hover:underline font-medium"
+                    >
+                      {selectedGalleryPhotos[safePhotoIdx].attributionText}
+                    </a>
+                  ) : (
+                    <span className="text-slate-700 font-medium">
+                      {selectedGalleryPhotos[safePhotoIdx].attributionText}
+                    </span>
+                  )}
+                </span>
+                <span className="text-slate-400 shrink-0">Google Maps</span>
+              </div>
+            )}
+
+            {/* Shop Summary & Tabs */}
+            <div className="px-4 pt-3.5 pb-0 border-b border-slate-200 shrink-0">
+              <div className="flex items-start justify-between gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  {selectedShopName}
+                </h2>
+                {selectedRegisteredService ? (
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 shrink-0 mt-0.5">
                     <ShieldCheck className="w-3.5 h-3.5" />
                     <span>Aadhaar Verified</span>
                   </span>
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                  <StarRatingDisplay
-                    average={getAverageRating(selectedService)}
-                    count={selectedService.ratingCount ?? 0}
-                  />
-                  <span aria-hidden="true">·</span>
-                  <span>{selectedService.category}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>By {selectedService.ownerName}</span>
-                </div>
+                ) : (
+                  <span className="text-xs font-medium text-slate-600 shrink-0 mt-0.5">
+                    Google Maps Place
+                  </span>
+                )}
               </div>
 
-              {/* Overview / Reviews Tabs */}
-              <div className="flex items-center gap-5 border-b border-slate-200 text-xs font-medium">
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                <StarRatingDisplay
+                  average={selectedEntry.ratingValue}
+                  count={selectedEntry.ratingCount}
+                />
+                <span aria-hidden="true">·</span>
+                <span>{selectedShopCategory}</span>
+                {selectedDistanceKm !== null && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums font-medium text-blue-700">
+                      {formatDistanceKm(selectedDistanceKm)} away
+                    </span>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center gap-5 text-xs font-medium overflow-x-auto">
                 <button
                   type="button"
-                  onClick={() => setDetailTab('overview')}
-                  className={`pb-2 border-b-2 transition-colors whitespace-nowrap ${
-                    detailTab === 'overview'
+                  onClick={() => setDetailTab('catalog')}
+                  className={`pb-2 border-b-2 transition-colors whitespace-nowrap tabular-nums ${
+                    detailTab === 'catalog'
                       ? 'border-blue-700 text-slate-900'
                       : 'border-transparent text-slate-500 hover:text-slate-900'
                   }`}
                 >
-                  Overview
+                  {selectedRegisteredService
+                    ? `Shop Info & Menu (${selectedCatalog.length})`
+                    : 'Shop Info & Hours'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailTab('photos')}
+                  className={`pb-2 border-b-2 transition-colors whitespace-nowrap tabular-nums ${
+                    detailTab === 'photos'
+                      ? 'border-blue-700 text-slate-900'
+                      : 'border-transparent text-slate-500 hover:text-slate-900'
+                  }`}
+                >
+                  Photos ({selectedGalleryPhotos.length})
                 </button>
                 <button
                   type="button"
@@ -566,76 +1387,785 @@ export function DiscoveryWorkspace({
                       : 'border-transparent text-slate-500 hover:text-slate-900'
                   }`}
                 >
-                  Reviews ({selectedService.ratingCount ?? 0})
+                  Reviews ({selectedEntry.ratingCount})
                 </button>
-              </div>
-
-              {detailTab === 'overview' ? (
-                <div className="space-y-2.5">
-                  <p className="text-xs text-slate-600 leading-relaxed line-clamp-2">
-                    {selectedService.description}
-                  </p>
-
-                  <p className="text-xs text-slate-500 flex items-start gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                    <span>
-                      {selectedService.address} · {selectedService.openHours}
-                    </span>
-                  </p>
-
-                  {selectedService.photoUrls.length > 1 && (
-                    <div className="flex gap-2">
-                      {selectedService.photoUrls.slice(1).map((url, idx) => (
-                        <div
-                          key={`${url}-${idx}`}
-                          className="w-16 h-12 rounded-md overflow-hidden border border-slate-200 bg-slate-100"
-                        >
-                          <SafeImage
-                            src={url}
-                            alt={`${selectedService.shopName} photo ${idx + 2}`}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="pt-2 border-t border-slate-100">
-                    <p className="text-xs font-medium text-slate-700 mb-1">Services</p>
-                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600">
-                      {selectedService.servicesOffered.slice(0, 4).map((item, idx) => (
-                        <span key={`${item}-${idx}`}>
-                          {idx > 0 && <span className="mr-3 text-slate-300">·</span>}
-                          {item}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <ProviderReviewsList providerId={selectedService.id} compact />
-              )}
-
-              <div className="pt-2 flex items-center gap-2.5 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => onOpenChat(selectedService)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors"
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Schedule & Chat</span>
-                </button>
-                <a
-                  href={`https://www.google.com/maps/dir/?api=1&destination=${selectedService.lat},${selectedService.lng}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
-                >
-                  <span>Directions</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
               </div>
             </div>
+
+            {/* Scrollable Body */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {selectedRegisteredService ? (
+                /* Registered NearCraft Provider Detail Body */
+                detailTab === 'catalog' ? (
+                  <>
+                    <div className="space-y-2.5 text-xs">
+                      <p className="text-slate-700 leading-relaxed">
+                        {selectedRegisteredService.description}
+                      </p>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-slate-600">
+                        <p className="flex items-center gap-1.5">
+                          <Store className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>Owner: {selectedRegisteredService.ownerName}</span>
+                        </p>
+                        <p className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span>{selectedRegisteredService.openHours}</span>
+                        </p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-xs text-slate-700 flex items-start gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                            <span>{selectedRegisteredService.address}</span>
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setCameraTrigger((prev) => prev + 1)}
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap shrink-0"
+                          >
+                            <LocateFixed className="w-3 h-3" />
+                            <span>Center Pin</span>
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                          <span className="font-mono tabular-nums">
+                            GPS: {selectedRegisteredService.lat.toFixed(5)},{' '}
+                            {selectedRegisteredService.lng.toFixed(5)}
+                          </span>
+                          <a
+                            href={`https://www.google.com/maps/dir/?api=1&destination=${selectedRegisteredService.lat},${selectedRegisteredService.lng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline whitespace-nowrap"
+                          >
+                            <span>Navigate on Google Maps</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-xs font-semibold text-slate-900">
+                          All Products & Services ({selectedCatalog.length})
+                        </p>
+                        <span className="text-[11px] text-slate-500">
+                          Select items to pay via app or counter
+                        </span>
+                      </div>
+
+                      <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                        {selectedCatalog.map((item, idx) => {
+                          const qty = selectedQuantities[idx] || 0;
+                          return (
+                            <li
+                              key={`${item.name}-${idx}`}
+                              className="px-3 py-2.5 flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex items-start gap-2">
+                                <span className="text-xs font-mono tabular-nums text-slate-400 pt-0.5 shrink-0">
+                                  #{idx + 1}
+                                </span>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-slate-900">
+                                    {item.name}
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">
+                                    {item.itemType}
+                                    {item.unit ? ` · ${item.unit}` : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2.5 shrink-0">
+                                <span className="text-xs font-mono tabular-nums font-semibold text-slate-900">
+                                  ₹{item.price}
+                                </span>
+
+                                {qty === 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleAdjustItemQty(selectedRegisteredService.id, idx, 1)
+                                    }
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                    <span>Add</span>
+                                  </button>
+                                ) : (
+                                  <div className="inline-flex items-center border border-slate-200 rounded-md bg-slate-50">
+                                    <button
+                                      type="button"
+                                      aria-label={`Decrease quantity of ${item.name}`}
+                                      onClick={() =>
+                                        handleAdjustItemQty(selectedRegisteredService.id, idx, -1)
+                                      }
+                                      className="p-1 text-slate-600 hover:text-slate-900"
+                                    >
+                                      <Minus className="w-3 h-3" />
+                                    </button>
+                                    <span className="px-2 text-xs font-mono tabular-nums font-semibold text-slate-900">
+                                      {qty}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      aria-label={`Increase quantity of ${item.name}`}
+                                      onClick={() =>
+                                        handleAdjustItemQty(selectedRegisteredService.id, idx, 1)
+                                      }
+                                      className="p-1 text-slate-600 hover:text-slate-900"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+
+                    {selectedGalleryPhotos.length > 0 && (
+                      <div className="pt-1">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="text-xs font-semibold text-slate-900">
+                            Shop & Product Photos ({selectedGalleryPhotos.length})
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab('photos')}
+                            className="text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap"
+                          >
+                            Open Gallery
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {selectedGalleryPhotos.map((photo, idx) => (
+                            <button
+                              key={`${photo.url}-strip-${idx}`}
+                              type="button"
+                              onClick={() => {
+                                setActivePhotoIdx(idx);
+                                setIsLightboxOpen(true);
+                              }}
+                              aria-label={`Preview shop photo ${idx + 1}`}
+                              className={`group relative aspect-[4/3] rounded-lg overflow-hidden border transition-all ${
+                                safePhotoIdx === idx
+                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
+                                  : 'border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <SafeImage
+                                src={photo.url}
+                                alt={`${selectedShopName} preview ${idx + 1}`}
+                                className="w-full h-full object-cover"
+                              />
+                              <span className="absolute bottom-1 right-1 px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-white bg-black/60 rounded">
+                                {idx + 1}/{selectedGalleryPhotos.length}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : detailTab === 'photos' ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-600">
+                        Uploaded by {selectedRegisteredService.ownerName} for{' '}
+                        {selectedRegisteredService.shopName}
+                      </p>
+                      <span className="text-xs font-mono tabular-nums text-slate-500">
+                        {selectedGalleryPhotos.length}{' '}
+                        {selectedGalleryPhotos.length === 1 ? 'photo' : 'photos'}
+                      </span>
+                    </div>
+
+                    {selectedGalleryPhotos.length === 0 ? (
+                      <div className="py-10 text-center border border-slate-200 rounded-lg bg-slate-50">
+                        <Images className="w-7 h-7 text-slate-300 mx-auto mb-2" />
+                        <p className="text-xs font-medium text-slate-700">
+                          No photos uploaded yet
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {selectedGalleryPhotos.map((photo, idx) => (
+                          <button
+                            key={`${photo.url}-gallery-${idx}`}
+                            type="button"
+                            onClick={() => {
+                              setActivePhotoIdx(idx);
+                              setIsLightboxOpen(true);
+                            }}
+                            aria-label={`Open photo ${idx + 1} in fullscreen`}
+                            className={`group relative aspect-[4/3] rounded-lg overflow-hidden border bg-slate-100 text-left transition-all ${
+                              safePhotoIdx === idx
+                                ? 'border-blue-700 ring-2 ring-blue-600/20'
+                                : 'border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            <SafeImage
+                              src={photo.url}
+                              alt={`${selectedShopName} gallery photo ${idx + 1}`}
+                              fallbackLabel={selectedShopCategory}
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/70 to-transparent flex items-center justify-between text-white">
+                              <span className="text-[11px] font-medium tabular-nums">
+                                Photo {idx + 1}
+                              </span>
+                              <Maximize2 className="w-3.5 h-3.5 opacity-80 group-hover:opacity-100" />
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <ProviderReviewsList providerId={selectedRegisteredService.id} />
+                )
+              ) : selectedGooglePlace ? (
+                /* Live Google Maps Place Detail Body */
+                detailTab === 'catalog' ? (
+                  <div className="space-y-4 text-xs">
+                    {selectedGooglePlace.editorialSummary && (
+                      <p className="text-slate-700 leading-relaxed">
+                        {selectedGooglePlace.editorialSummary}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-600">
+                      {formatBusinessStatusLabel(selectedGooglePlace.businessStatus) && (
+                        <span className="font-medium text-slate-800">
+                          {formatBusinessStatusLabel(selectedGooglePlace.businessStatus)}
+                        </span>
+                      )}
+                      {formatPriceLevelLabel(selectedGooglePlace.priceLevel) && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            Pricing: {formatPriceLevelLabel(selectedGooglePlace.priceLevel)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Exact Shop Location & Reach Links */}
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs text-slate-700 flex items-start gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                          <span>{selectedGooglePlace.formattedAddress}</span>
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setCameraTrigger((prev) => prev + 1)}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap shrink-0"
+                        >
+                          <LocateFixed className="w-3 h-3" />
+                          <span>Center Pin</span>
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span className="font-mono tabular-nums">
+                          GPS: {selectedGooglePlace.lat.toFixed(5)},{' '}
+                          {selectedGooglePlace.lng.toFixed(5)}
+                        </span>
+                        <a
+                          href={`https://www.google.com/maps/dir/?api=1&destination=${selectedGooglePlace.lat},${selectedGooglePlace.lng}&destination_place_id=${encodeURIComponent(selectedGooglePlace.id)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-semibold text-blue-700 hover:underline whitespace-nowrap"
+                        >
+                          <span>Navigate on Google Maps</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Contact Links & Opening Hours */}
+                    {isLoadingPlaceDetail && !selectedGooglePlace.detailsLoaded ? (
+                      <div className="p-3 border border-slate-200 rounded-lg text-slate-500 flex items-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                        <span>Loading hours, contact details, and customer reviews...</span>
+                      </div>
+                    ) : (
+                      <>
+                        {(selectedGooglePlace.nationalPhoneNumber ||
+                          selectedGooglePlace.websiteURI ||
+                          selectedGooglePlace.googleMapsURI) && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {selectedGooglePlace.nationalPhoneNumber && (
+                              <a
+                                href={`tel:${selectedGooglePlace.internationalPhoneNumber || selectedGooglePlace.nationalPhoneNumber}`}
+                                className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                              >
+                                <Phone className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                                <span className="truncate font-mono tabular-nums">
+                                  {selectedGooglePlace.nationalPhoneNumber}
+                                </span>
+                              </a>
+                            )}
+                            {selectedGooglePlace.websiteURI && (
+                              <a
+                                href={selectedGooglePlace.websiteURI}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition-colors"
+                              >
+                                <Globe className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                                <span className="truncate">Official Website</span>
+                              </a>
+                            )}
+                          </div>
+                        )}
+
+                        {selectedGooglePlace.weekdayDescriptions.length > 0 && (
+                          <div>
+                            <p className="text-xs font-semibold text-slate-900 mb-2">
+                              Opening Hours
+                            </p>
+                            <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                              {selectedGooglePlace.weekdayDescriptions.map((line) => (
+                                <li
+                                  key={line}
+                                  className="px-3 py-2 text-xs text-slate-700 tabular-nums"
+                                >
+                                  {line}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Quick Photo Strip for Google Place */}
+                    {selectedGalleryPhotos.length > 0 && (
+                      <div className="pt-1">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="text-xs font-semibold text-slate-900">
+                            Place Photos ({selectedGalleryPhotos.length})
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab('photos')}
+                            className="text-[11px] font-medium text-blue-700 hover:underline whitespace-nowrap"
+                          >
+                            Open Gallery
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {selectedGalleryPhotos.slice(0, 6).map((photo, idx) => (
+                            <button
+                              key={`${photo.url}-gstrip-${idx}`}
+                              type="button"
+                              onClick={() => {
+                                setActivePhotoIdx(idx);
+                                setIsLightboxOpen(true);
+                              }}
+                              aria-label={`Preview Google place photo ${idx + 1}`}
+                              className={`relative aspect-[4/3] rounded-lg overflow-hidden border transition-all ${
+                                safePhotoIdx === idx
+                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
+                                  : 'border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <SafeImage
+                                src={photo.url}
+                                alt={`${selectedShopName} preview ${idx + 1}`}
+                                className="w-full h-full object-cover"
+                              />
+                              <span className="absolute bottom-1 right-1 px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-white bg-black/60 rounded">
+                                {idx + 1}/{selectedGalleryPhotos.length}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedGooglePlace.attributions.length > 0 && (
+                      <div className="text-[11px] text-slate-500 pt-1">
+                        <span>Data attribution: </span>
+                        {selectedGooglePlace.attributions.map((attr, idx) => (
+                          <React.Fragment key={`${attr.provider}-${idx}`}>
+                            {idx > 0 && <span>, </span>}
+                            {attr.providerURI ? (
+                              <a
+                                href={attr.providerURI}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline hover:text-slate-700"
+                              >
+                                {attr.provider}
+                              </a>
+                            ) : (
+                              <span>{attr.provider}</span>
+                            )}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="p-3 rounded-lg border border-slate-200 bg-slate-50 text-[11px] text-slate-600 leading-relaxed">
+                      Public business listing sourced live from Google Maps. Shops that register on
+                      NearCraft unlock itemized service menus, direct scheduling chat, and digital
+                      counter/in-app billing.
+                    </div>
+                  </div>
+                ) : detailTab === 'photos' ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-600">
+                        Google Maps photos for {selectedGooglePlace.displayName}
+                      </p>
+                      <span className="text-xs font-mono tabular-nums text-slate-500">
+                        {selectedGalleryPhotos.length}{' '}
+                        {selectedGalleryPhotos.length === 1 ? 'photo' : 'photos'}
+                      </span>
+                    </div>
+
+                    {selectedGalleryPhotos.length === 0 ? (
+                      <div className="py-10 text-center border border-slate-200 rounded-lg bg-slate-50">
+                        <Images className="w-7 h-7 text-slate-300 mx-auto mb-2" />
+                        <p className="text-xs font-medium text-slate-700">
+                          No Google Maps photos available for this place
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {selectedGalleryPhotos.map((photo, idx) => (
+                          <div key={`${photo.url}-ggallery-${idx}`} className="space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActivePhotoIdx(idx);
+                                setIsLightboxOpen(true);
+                              }}
+                              aria-label={`Open photo ${idx + 1} in fullscreen`}
+                              className={`group relative w-full aspect-[4/3] rounded-lg overflow-hidden border bg-slate-100 text-left transition-all ${
+                                safePhotoIdx === idx
+                                  ? 'border-blue-700 ring-2 ring-blue-600/20'
+                                  : 'border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <SafeImage
+                                src={photo.url}
+                                alt={`${selectedShopName} photo ${idx + 1}`}
+                                fallbackLabel={selectedShopCategory}
+                                className="w-full h-full object-cover"
+                              />
+                              <div className="pointer-events-none absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/70 to-transparent flex items-center justify-between text-white">
+                                <span className="text-[11px] font-medium tabular-nums">
+                                  Photo {idx + 1}
+                                </span>
+                                <Maximize2 className="w-3.5 h-3.5 opacity-80 group-hover:opacity-100" />
+                              </div>
+                            </button>
+                            {photo.attributionText && (
+                              <p className="text-[10px] text-slate-500 truncate px-0.5">
+                                By{' '}
+                                {photo.attributionUri ? (
+                                  <a
+                                    href={photo.attributionUri}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="hover:underline text-slate-700"
+                                  >
+                                    {photo.attributionText}
+                                  </a>
+                                ) : (
+                                  photo.attributionText
+                                )}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Google Maps Customer Reviews Tab */
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                      <StarRatingDisplay
+                        average={selectedGooglePlace.rating}
+                        count={selectedGooglePlace.userRatingCount}
+                      />
+                      {selectedGooglePlace.googleMapsURI && (
+                        <a
+                          href={selectedGooglePlace.googleMapsURI}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline whitespace-nowrap"
+                        >
+                          <span>View on Google Maps</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+
+                    {isLoadingPlaceDetail && !selectedGooglePlace.detailsLoaded ? (
+                      <div className="py-6 flex items-center justify-center gap-2 text-xs text-slate-500">
+                        <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
+                        <span>Loading customer reviews...</span>
+                      </div>
+                    ) : selectedGooglePlace.reviews.length === 0 ? (
+                      <p className="py-6 text-center text-xs text-slate-500">
+                        No detailed Google Maps review snippets returned for this listing.
+                      </p>
+                    ) : (
+                      <ul className="divide-y divide-slate-100">
+                        {selectedGooglePlace.reviews.map((rev, idx) => (
+                          <li key={`${rev.authorName}-${idx}`} className="py-3 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex items-center gap-2">
+                                {rev.authorUri ? (
+                                  <a
+                                    href={rev.authorUri}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs font-semibold text-slate-900 hover:text-blue-700 hover:underline truncate"
+                                  >
+                                    {rev.authorName}
+                                  </a>
+                                ) : (
+                                  <span className="text-xs font-semibold text-slate-900 truncate">
+                                    {rev.authorName}
+                                  </span>
+                                )}
+                              </div>
+                              {rev.relativeTime && (
+                                <span className="text-[11px] text-slate-400 shrink-0 tabular-nums">
+                                  {rev.relativeTime}
+                                </span>
+                              )}
+                            </div>
+
+                            {rev.rating !== null && (
+                              <div className="flex items-center gap-1 text-xs text-slate-700">
+                                <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                                <span className="font-semibold tabular-nums">
+                                  {rev.rating.toFixed(1)}
+                                </span>
+                              </div>
+                            )}
+
+                            {rev.text && (
+                              <p className="text-xs text-slate-700 leading-relaxed">
+                                {rev.text}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )
+              ) : null}
+            </div>
+
+            {/* Sticky Bottom Actions */}
+            {selectedRegisteredService ? (
+              <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 shrink-0 space-y-2">
+                {selectedBillItems.length > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs">
+                      <span className="font-semibold text-slate-900 font-mono tabular-nums">
+                        {selectedOrderTotals.count}{' '}
+                        {selectedOrderTotals.count === 1 ? 'item' : 'items'}
+                      </span>
+                      <span className="text-slate-400 mx-1.5">·</span>
+                      <span className="font-bold text-slate-900 font-mono tabular-nums">
+                        ₹{selectedOrderTotals.amount.toFixed(0)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onStartCheckout(selectedRegisteredService, selectedBillItems)
+                      }
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      <span>Order & View Bill</span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenChat(selectedRegisteredService)}
+                    className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                      selectedBillItems.length > 0
+                        ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                        : 'bg-blue-700 hover:bg-blue-800 text-white'
+                    }`}
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>Schedule & Chat</span>
+                  </button>
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${selectedRegisteredService.lat},${selectedRegisteredService.lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <span>Directions</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              </div>
+            ) : selectedGooglePlace ? (
+              <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 shrink-0 flex items-center gap-2">
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${selectedGooglePlace.lat},${selectedGooglePlace.lng}&destination_place_id=${encodeURIComponent(selectedGooglePlace.id)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>Navigate on Google Maps</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                {selectedGooglePlace.nationalPhoneNumber ? (
+                  <a
+                    href={`tel:${selectedGooglePlace.internationalPhoneNumber || selectedGooglePlace.nationalPhoneNumber}`}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    <span>Call</span>
+                  </a>
+                ) : selectedGooglePlace.googleMapsURI ? (
+                  <a
+                    href={selectedGooglePlace.googleMapsURI}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <span>Maps Page</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {/* Fullscreen Photo Lightbox Modal */}
+        {selectedEntry && isLightboxOpen && selectedGalleryPhotos.length > 0 && (
+          <div
+            className="fixed inset-0 z-50 bg-slate-950/92 backdrop-blur-[2px] flex flex-col"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${selectedShopName} photo gallery`}
+            onClick={() => setIsLightboxOpen(false)}
+          >
+            <div
+              className="px-6 py-4 flex items-center justify-between gap-4 border-b border-white/10 text-white shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-semibold truncate">
+                  {selectedShopName}
+                </h3>
+                <p className="text-xs text-slate-300 font-mono tabular-nums mt-0.5">
+                  {selectedShopCategory} · Photo {safePhotoIdx + 1} of{' '}
+                  {selectedGalleryPhotos.length}
+                  {selectedGalleryPhotos[safePhotoIdx]?.attributionText
+                    ? ` · Photo by ${selectedGalleryPhotos[safePhotoIdx].attributionText}`
+                    : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLightboxOpen(false)}
+                aria-label="Close photo preview"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-white/10 hover:bg-white/20 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                <X className="w-4 h-4" />
+                <span>Close</span>
+              </button>
+            </div>
+
+            <div
+              className="relative flex-1 flex items-center justify-center p-4 sm:p-8 min-h-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {selectedGalleryPhotos.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActivePhotoIdx(
+                      (safePhotoIdx - 1 + selectedGalleryPhotos.length) %
+                        selectedGalleryPhotos.length
+                    )
+                  }
+                  aria-label="Previous photo"
+                  className="absolute left-3 sm:left-6 p-2.5 rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors z-10"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+              )}
+
+              <div className="w-full max-w-4xl max-h-[72vh] aspect-[4/3] rounded-xl overflow-hidden bg-slate-900 border border-white/10 flex items-center justify-center">
+                <SafeImage
+                  src={selectedGalleryPhotos[safePhotoIdx].url}
+                  alt={`${selectedShopName} photo ${safePhotoIdx + 1}`}
+                  fallbackLabel={selectedShopCategory}
+                  className="w-full h-full object-contain"
+                />
+              </div>
+
+              {selectedGalleryPhotos.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActivePhotoIdx((safePhotoIdx + 1) % selectedGalleryPhotos.length)
+                  }
+                  aria-label="Next photo"
+                  className="absolute right-3 sm:right-6 p-2.5 rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors z-10"
+                >
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+
+            {selectedGalleryPhotos.length > 1 && (
+              <div
+                className="px-6 pb-5 pt-2 flex items-center justify-center gap-2.5 overflow-x-auto shrink-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {selectedGalleryPhotos.map((photo, idx) => (
+                  <button
+                    key={`${photo.url}-lightbox-${idx}`}
+                    type="button"
+                    onClick={() => setActivePhotoIdx(idx)}
+                    aria-label={`Select photo ${idx + 1}`}
+                    className={`w-16 h-12 rounded-lg overflow-hidden border-2 transition-all shrink-0 ${
+                      safePhotoIdx === idx
+                        ? 'border-blue-400 scale-105 shadow-lg'
+                        : 'border-white/25 opacity-65 hover:opacity-100'
+                    }`}
+                  >
+                    <SafeImage
+                      src={photo.url}
+                      alt={`${selectedShopName} thumbnail ${idx + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Store } from 'lucide-react';
 
 interface SafeImageProps {
@@ -15,6 +15,10 @@ export function SafeImage({
   fallbackLabel = 'Service Photo',
 }: SafeImageProps) {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   const isSafePath =
     typeof src === 'string' &&

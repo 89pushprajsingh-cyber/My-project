@@ -7,8 +7,9 @@
 3. **Atomicity Guarantee**: A `/services/{providerId}` document can only be created with `aadhaarVerified == true` when `/providers/{providerId}/private/kyc` exists or is created in the same atomic batch (`existsAfter`).
 4. **Chat Participant Isolation**: Only `seekerId` or `providerId` on a `/chats/{chatId}` thread can read or list that thread, send messages, or list messages inside `/chats/{chatId}/messages`.
 5. **Appointment State Integrity**: Appointments start in `pending`, must reference an existing `/services/{providerId}` and `/chats/{chatId}`, and cannot be modified once reaching a terminal state (`declined`, `cancelled`, `completed`).
-6. **Review Authenticity & Atomic Rating Integrity**: Reviews under `/services/{providerId}/reviews/{reviewId}` are keyed by `appointmentId`, require an existing `completed` appointment belonging to the submitting seeker and target provider, and must atomically increment `ratingSum` and `ratingCount` on `/services/{providerId}` in the same batch.
-7. **Temporal Integrity**: All `createdAt`, `updatedAt`, `verifiedAt`, and `lastMessageAt` timestamps must equal `request.time`.
+6. **Review Authenticity & Atomic Rating Integrity**: Reviews under `/services/{providerId}/reviews/{reviewId}` are keyed by a verified completed appointment or paid bill ID belonging to the submitting seeker and target provider, and must atomically increment `ratingSum` and `ratingCount` on `/services/{providerId}` in the same batch.
+7. **Billing & Receipt Integrity**: Bills under `/bills/{billId}` reference an existing `/services/{providerId}`, isolate read/list access strictly to `seekerId` or `providerId`, lock line items and totals against tampering after creation, and lock terminal `paymentStatus == 'paid'` receipts against modification.
+8. **Temporal Integrity**: All `createdAt`, `updatedAt`, `verifiedAt`, `paidAt`, and `lastMessageAt` timestamps must equal `request.time`.
 
 ## Dirty Dozen Adversarial Payloads
 
@@ -24,3 +25,5 @@
 10. **Non-Participant Chat Injection**: Posting message to a chat where `request.auth.uid` is neither `seekerId` nor `providerId` -> `PERMISSION_DENIED`
 11. **Appointment Status Bypass on Create**: Creating `/appointments/{id}` with `status: "confirmed"` -> `PERMISSION_DENIED`
 12. **Terminal Appointment Tampering**: Updating an appointment whose existing status is `"cancelled"` or `"completed"` -> `PERMISSION_DENIED`
+13. **Paid Bill Amount Tampering**: Updating `totalAmount` on an existing `/bills/{billId}` or updating a bill whose `paymentStatus` is already `"paid"` -> `PERMISSION_DENIED`
+14. **Counter Bill Confirmation Spoofing**: Seeker attempting to mark a `counter` payment bill as `"paid"` without switching to `in_app` payment -> `PERMISSION_DENIED`
